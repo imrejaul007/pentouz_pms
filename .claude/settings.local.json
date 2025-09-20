@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm ls:*)",
+      "Bash(choco:*)",
+      "Bash(tar:*)",
+      "Bash(redis-server.exe:*)",
+      "Bash(\"C:\\Users\\Mukul raj\\Downloads\\project-bolt-sb1-vhvvuqkj\\project\\backend\\redis\\redis-server.exe\" \"C:\\Users\\Mukul raj\\Downloads\\project-bolt-sb1-vhvvuqkj\\project\\backend\\redis\\redis.windows.conf\")",
+      "Bash(npm start)",
+      "Bash(curl:*)",
+      "Bash(npm run generate-keys:*)",
+      "Bash(node:*)",
+      "WebSearch",
+      "Bash(npm run seed:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
