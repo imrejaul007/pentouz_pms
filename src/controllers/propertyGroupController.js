@@ -1,9 +1,12 @@
 import PropertyGroup from '../models/PropertyGroup.js';
 import Hotel from '../models/Hotel.js';
 import User from '../models/User.js';
+import Room from '../models/Room.js';
+import Booking from '../models/Booking.js';
 import { offsetPaginate } from '../utils/pagination.js';
 import logger from '../utils/logger.js';
 import { validationResult } from 'express-validator';
+import mongoose from 'mongoose';
 
 /**
  * Property Group Management Controller
@@ -61,7 +64,7 @@ export const getPropertyGroups = async (req, res) => {
       page: req.query.page || 1,
       limit: req.query.limit || 20,
       populate: [
-        { path: 'properties', select: 'name address.city isActive totalRooms' }
+        { path: 'properties', select: 'name address.city isActive totalRooms roomCount' }
       ]
     };
 
@@ -72,6 +75,14 @@ export const getPropertyGroups = async (req, res) => {
     };
 
     const result = await offsetPaginate(PropertyGroup, query, options);
+
+    // Calculate real metrics for each property group
+    for (const group of result.data) {
+      const metrics = await calculateGroupMetrics(group);
+      group.metrics = metrics;
+    }
+
+    console.log(`🏢 PROPERTY GROUPS - Calculated metrics for ${result.data.length} groups`);
 
     res.json({
       success: true,
@@ -676,6 +687,112 @@ export const getPropertyGroupAuditLog = async (req, res) => {
       message: 'Failed to get audit log',
       error: error.message
     });
+  }
+};
+
+// Helper function to calculate real group metrics
+const calculateGroupMetrics = async (group) => {
+  try {
+    console.log(`🏢 CALCULATING METRICS - Group: ${group.name}, Properties: ${group.properties?.length || 0}`);
+
+    let totalRevenue = 0;
+    let totalRooms = 0;
+    let totalOccupied = 0;
+    let totalBookings = 0;
+    let activeProperties = 0;
+
+    if (!group.properties || group.properties.length === 0) {
+      console.log(`🏢 CALCULATING METRICS - No properties found for group ${group.name}`);
+      return {
+        totalProperties: 0,
+        totalRooms: 0,
+        averageOccupancyRate: 0,
+        totalRevenue: 0,
+        activeUsers: 0
+      };
+    }
+
+    // Calculate metrics for each property in the group
+    for (const property of group.properties) {
+      if (!property.isActive) continue;
+
+      activeProperties++;
+
+      // Get property hotel ID (property is a hotel object)
+      const hotelId = property._id;
+      console.log(`🏢 CALCULATING METRICS - Processing hotel: ${property.name} (${hotelId})`);
+
+      // Get total rooms for this property
+      const roomCount = await Room.countDocuments({
+        hotelId: new mongoose.Types.ObjectId(hotelId),
+        isActive: true
+      });
+
+      totalRooms += roomCount;
+      console.log(`🏢 CALCULATING METRICS - Hotel ${property.name} has ${roomCount} rooms`);
+
+      // Get current bookings for occupancy
+      const today = new Date();
+      const currentBookings = await Booking.find({
+        hotelId: new mongoose.Types.ObjectId(hotelId),
+        checkIn: { $lte: today },
+        checkOut: { $gt: today },
+        status: { $in: ['confirmed', 'checked_in'] }
+      });
+
+      totalOccupied += currentBookings.length;
+      console.log(`🏢 CALCULATING METRICS - Hotel ${property.name} has ${currentBookings.length} occupied rooms`);
+
+      // Get this month's revenue
+      const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+      const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+
+      const monthlyBookings = await Booking.find({
+        hotelId: new mongoose.Types.ObjectId(hotelId),
+        $or: [
+          { checkIn: { $gte: monthStart, $lte: monthEnd } },
+          { checkOut: { $gte: monthStart, $lte: monthEnd } },
+          {
+            checkIn: { $lt: monthStart },
+            checkOut: { $gt: monthEnd }
+          }
+        ],
+        status: { $in: ['confirmed', 'checked_in', 'checked_out'] }
+      });
+
+      const propertyRevenue = monthlyBookings.reduce((sum, booking) => sum + (booking.totalAmount || 0), 0);
+      totalRevenue += propertyRevenue;
+      totalBookings += monthlyBookings.length;
+
+      console.log(`🏢 CALCULATING METRICS - Hotel ${property.name} revenue: ₹${propertyRevenue}`);
+    }
+
+    // Calculate averages
+    const averageOccupancyRate = totalRooms > 0 ? (totalOccupied / totalRooms) * 100 : 0;
+
+    const metrics = {
+      totalProperties: activeProperties,
+      totalRooms,
+      averageOccupancyRate: Math.round(averageOccupancyRate * 100) / 100,
+      totalRevenue: Math.round(totalRevenue),
+      activeUsers: totalBookings, // Using bookings as a proxy for active users
+      // Additional computed metrics
+      totalOccupied,
+      totalAvailable: totalRooms - totalOccupied
+    };
+
+    console.log(`🏢 CALCULATING METRICS - Final metrics for ${group.name}:`, metrics);
+    return metrics;
+
+  } catch (error) {
+    console.error(`🏢 CALCULATING METRICS - Error calculating metrics for group ${group.name}:`, error);
+    return {
+      totalProperties: 0,
+      totalRooms: 0,
+      averageOccupancyRate: 0,
+      totalRevenue: 0,
+      activeUsers: 0
+    };
   }
 };
 

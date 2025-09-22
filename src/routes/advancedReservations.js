@@ -342,9 +342,35 @@ router.post('/:id/add-upgrade',
  *       404:
  *         description: Advanced reservation not found
  */
-router.post('/:id/add-flag', 
-  authorize('admin', 'staff'), 
+router.post('/:id/add-flag',
+  authorize('admin', 'staff'),
   catchAsync(advancedReservationsController.addReservationFlag)
+);
+
+/**
+ * @swagger
+ * /advanced-reservations/{id}:
+ *   delete:
+ *     summary: Delete advanced reservation
+ *     tags: [Advanced Reservations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Advanced reservation ID
+ *     responses:
+ *       200:
+ *         description: Advanced reservation deleted successfully
+ *       404:
+ *         description: Advanced reservation not found
+ */
+router.delete('/:id',
+  authorize('admin', 'staff'),
+  catchAsync(advancedReservationsController.deleteAdvancedReservation)
 );
 
 export default router;

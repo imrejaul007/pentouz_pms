@@ -1601,7 +1601,25 @@ export const getProfitabilityMetrics = async (req, res) => {
 
     // Calculate basic metrics
     const totalRevenue = bookings.reduce((sum, booking) => sum + (booking.totalAmount || 0), 0);
-    const totalRoomNights = bookings.reduce((sum, booking) => sum + (booking.nights || 0), 0);
+
+    // FIX: Calculate room nights properly from check-in/check-out dates
+    const totalRoomNights = bookings.reduce((sum, booking) => {
+      let nights = booking.nights;
+
+      // If nights is not set, calculate from check-in/check-out dates
+      if (!nights && booking.checkIn && booking.checkOut) {
+        const checkIn = new Date(booking.checkIn);
+        const checkOut = new Date(booking.checkOut);
+        nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24));
+      }
+
+      // Ensure minimum 1 night per booking
+      nights = Math.max(1, nights || 1);
+
+      // Multiply by number of rooms in the booking
+      const roomCount = booking.rooms ? booking.rooms.length : 1;
+      return sum + (nights * roomCount);
+    }, 0);
 
     // Estimate costs (simplified calculation - in real system would have actual cost data)
     const estimatedCosts = totalRevenue * 0.6; // Assume 60% of revenue as costs
@@ -1627,7 +1645,19 @@ export const getProfitabilityMetrics = async (req, res) => {
     });
 
     const prevRevenue = prevBookings.reduce((sum, booking) => sum + (booking.totalAmount || 0), 0);
-    const prevRoomNights = prevBookings.reduce((sum, booking) => sum + (booking.nights || 0), 0);
+
+    // FIX: Calculate previous period room nights properly
+    const prevRoomNights = prevBookings.reduce((sum, booking) => {
+      let nights = booking.nights;
+      if (!nights && booking.checkIn && booking.checkOut) {
+        const checkIn = new Date(booking.checkIn);
+        const checkOut = new Date(booking.checkOut);
+        nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24));
+      }
+      nights = Math.max(1, nights || 1);
+      const roomCount = booking.rooms ? booking.rooms.length : 1;
+      return sum + (nights * roomCount);
+    }, 0);
     const prevProfit = (prevRevenue - (prevRevenue * 0.6)) * 0.85;
     const prevOccupancy = totalPossibleRoomNights > 0 ? (prevRoomNights / totalPossibleRoomNights) * 100 : 0;
 
@@ -1635,9 +1665,19 @@ export const getProfitabilityMetrics = async (req, res) => {
     const roomTypeProfitability = [];
     const roomTypeStats = {};
 
-    // Group bookings by room type
+    // Group bookings by room type - FIX: Properly determine room type from populated room data
     for (const booking of bookings) {
-      const roomType = booking.roomType || 'Unknown';
+      let roomType = booking.roomType;
+
+      // If roomType is undefined/null, get it from the first room's type
+      if (!roomType || roomType === 'undefined' || roomType === null) {
+        if (booking.rooms && booking.rooms.length > 0 && booking.rooms[0].roomId) {
+          roomType = booking.rooms[0].roomId.type || 'Unknown';
+        } else {
+          roomType = 'Unknown';
+        }
+      }
+
       if (!roomTypeStats[roomType]) {
         roomTypeStats[roomType] = {
           revenue: 0,
@@ -1646,15 +1686,25 @@ export const getProfitabilityMetrics = async (req, res) => {
           roomCount: 0
         };
       }
+      // Calculate nights properly for this booking
+      let nights = booking.nights;
+      if (!nights && booking.checkIn && booking.checkOut) {
+        const checkIn = new Date(booking.checkIn);
+        const checkOut = new Date(booking.checkOut);
+        nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24));
+      }
+      nights = Math.max(1, nights || 1);
+      const roomCount = booking.rooms ? booking.rooms.length : 1;
+
       roomTypeStats[roomType].revenue += booking.totalAmount || 0;
-      roomTypeStats[roomType].nights += booking.nights || 0;
+      roomTypeStats[roomType].nights += nights * roomCount;
       roomTypeStats[roomType].bookings += 1;
     }
 
-    // Count rooms by type
+    // Count rooms by type - FIX: Use the 'type' field instead of 'roomType'
     const roomTypeCounts = {};
     for (const room of rooms) {
-      const type = room.roomType || 'Unknown';
+      const type = room.type || 'Unknown'; // Use 'type' field which has the actual data
       roomTypeCounts[type] = (roomTypeCounts[type] || 0) + 1;
     }
 
@@ -1837,3 +1887,146 @@ async function generateForecastData(bookings, totalRooms) {
     };
   }
 }
+
+// Hotel Metrics for Multi-Property Manager
+export const getHotelMetrics = async (req, res) => {
+  try {
+    const { hotelId } = req.params;
+    const { startDate, endDate } = req.query;
+
+    console.log(`🏨 HOTEL METRICS - Fetching metrics for hotel ${hotelId}`);
+
+    // Set default date range if not provided
+    const today = new Date();
+    const defaultStartDate = startDate ? new Date(startDate) : new Date(today.getFullYear(), today.getMonth(), 1);
+    const defaultEndDate = endDate ? new Date(endDate) : today;
+
+    console.log(`🏨 HOTEL METRICS - Date range: ${defaultStartDate.toISOString()} to ${defaultEndDate.toISOString()}`);
+
+    // Get hotel information
+    const hotel = await Hotel.findById(hotelId);
+    if (!hotel) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hotel not found'
+      });
+    }
+
+    // Get total rooms
+    const totalRooms = await Room.countDocuments({
+      hotelId: new mongoose.Types.ObjectId(hotelId),
+      isActive: true
+    });
+
+    console.log(`🏨 HOTEL METRICS - Total rooms: ${totalRooms}`);
+
+    // Get current bookings (for occupancy calculation)
+    const currentBookings = await Booking.find({
+      hotelId: new mongoose.Types.ObjectId(hotelId),
+      checkIn: { $lte: today },
+      checkOut: { $gt: today },
+      status: { $in: ['confirmed', 'checked_in'] }
+    });
+
+    const occupiedRooms = currentBookings.length;
+    const availableRooms = totalRooms - occupiedRooms;
+    const occupancyRate = totalRooms > 0 ? (occupiedRooms / totalRooms) * 100 : 0;
+
+    console.log(`🏨 HOTEL METRICS - Occupied: ${occupiedRooms}, Available: ${availableRooms}, Occupancy: ${occupancyRate}%`);
+
+    // Get rooms out of order
+    const oooRooms = await Room.countDocuments({
+      hotelId: new mongoose.Types.ObjectId(hotelId),
+      status: { $in: ['maintenance', 'out_of_order'] },
+      isActive: true
+    });
+
+    // Get bookings for revenue calculation (current period)
+    const periodBookings = await Booking.find({
+      hotelId: new mongoose.Types.ObjectId(hotelId),
+      $or: [
+        { checkIn: { $gte: defaultStartDate, $lte: defaultEndDate } },
+        { checkOut: { $gte: defaultStartDate, $lte: defaultEndDate } },
+        {
+          checkIn: { $lt: defaultStartDate },
+          checkOut: { $gt: defaultEndDate }
+        }
+      ],
+      status: { $in: ['confirmed', 'checked_in', 'checked_out'] }
+    });
+
+    // Calculate revenue metrics
+    const totalRevenue = periodBookings.reduce((sum, booking) => sum + (booking.totalAmount || 0), 0);
+    const totalRoomNights = periodBookings.reduce((sum, booking) => {
+      const checkIn = new Date(booking.checkIn);
+      const checkOut = new Date(booking.checkOut);
+      const nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24));
+      return sum + Math.max(1, nights);
+    }, 0);
+
+    const averageDailyRate = totalRoomNights > 0 ? totalRevenue / totalRoomNights : 0;
+    const revenuePerAvailableRoom = totalRooms > 0 ? totalRevenue / totalRooms : 0;
+
+    console.log(`🏨 HOTEL METRICS - Revenue: ₹${totalRevenue}, ADR: ₹${averageDailyRate}, RevPAR: ₹${revenuePerAvailableRoom}`);
+
+    // Get last month's data for comparison
+    const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+
+    const lastMonthBookings = await Booking.find({
+      hotelId: new mongoose.Types.ObjectId(hotelId),
+      $or: [
+        { checkIn: { $gte: lastMonthStart, $lte: lastMonthEnd } },
+        { checkOut: { $gte: lastMonthStart, $lte: lastMonthEnd } },
+        {
+          checkIn: { $lt: lastMonthStart },
+          checkOut: { $gt: lastMonthEnd }
+        }
+      ],
+      status: { $in: ['confirmed', 'checked_in', 'checked_out'] }
+    });
+
+    const lastMonthRevenue = lastMonthBookings.reduce((sum, booking) => sum + (booking.totalAmount || 0), 0);
+    const lastMonthRoomNights = lastMonthBookings.reduce((sum, booking) => {
+      const checkIn = new Date(booking.checkIn);
+      const checkOut = new Date(booking.checkOut);
+      const nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24));
+      return sum + Math.max(1, nights);
+    }, 0);
+
+    const lastMonthADR = lastMonthRoomNights > 0 ? lastMonthRevenue / lastMonthRoomNights : 0;
+    const lastMonthRevPAR = totalRooms > 0 ? lastMonthRevenue / totalRooms : 0;
+    const lastMonthOccupancy = totalRooms > 0 ? (lastMonthBookings.length / totalRooms) * 100 : 0;
+
+    const metrics = {
+      occupiedRooms,
+      availableRooms,
+      oooRooms,
+      occupancyRate: Math.round(occupancyRate * 100) / 100,
+      averageDailyRate: Math.round(averageDailyRate),
+      revenuePerAvailableRoom: Math.round(revenuePerAvailableRoom),
+      totalRevenue: Math.round(totalRevenue),
+      lastMonth: {
+        occupancyRate: Math.round(lastMonthOccupancy * 100) / 100,
+        averageDailyRate: Math.round(lastMonthADR),
+        revenuePerAvailableRoom: Math.round(lastMonthRevPAR),
+        totalRevenue: Math.round(lastMonthRevenue)
+      }
+    };
+
+    console.log(`🏨 HOTEL METRICS - Final metrics:`, metrics);
+
+    res.json({
+      success: true,
+      data: metrics
+    });
+
+  } catch (error) {
+    console.error('Error fetching hotel metrics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch hotel metrics',
+      error: error.message
+    });
+  }
+};

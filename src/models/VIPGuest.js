@@ -120,8 +120,8 @@ const vipGuestSchema = new mongoose.Schema({
   guestId: {
     type: mongoose.Schema.ObjectId,
     ref: 'User',
-    required: [true, 'Guest ID is required'],
-    unique: true
+    required: [true, 'Guest ID is required']
+    // Remove unique: true here since we have compound unique index below
   },
   vipLevel: {
     type: String,
@@ -256,6 +256,315 @@ const vipGuestSchema = new mongoose.Schema({
   updatedBy: {
     type: mongoose.Schema.ObjectId,
     ref: 'User'
+  },
+
+  // Enhanced loyalty management
+  loyaltyProgram: {
+    currentTier: {
+      type: String,
+      enum: ['member', 'silver', 'gold', 'platinum', 'diamond'],
+      default: 'member'
+    },
+    previousTier: String,
+    tierUpgradeDate: Date,
+    tierDowngradeDate: Date,
+    nextTierRequirements: {
+      staysNeeded: Number,
+      nightsNeeded: Number,
+      spendingNeeded: Number
+    },
+    pointsBalance: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    pointsEarned: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    pointsRedeemed: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    membershipStartDate: {
+      type: Date,
+      default: Date.now
+    },
+    renewalDate: Date,
+    tierBenefitsActivated: {
+      type: Boolean,
+      default: true
+    }
+  },
+
+  // Enhanced benefits with tier-specific configuration
+  tierBenefits: {
+    member: {
+      roomUpgradeEligibility: {
+        type: Boolean,
+        default: false
+      },
+      pointsMultiplier: {
+        type: Number,
+        default: 1
+      },
+      complimentaryServices: [String]
+    },
+    silver: {
+      roomUpgradeEligibility: {
+        type: Boolean,
+        default: true
+      },
+      pointsMultiplier: {
+        type: Number,
+        default: 1.25
+      },
+      complimentaryServices: [String],
+      priorityCheckIn: {
+        type: Boolean,
+        default: true
+      }
+    },
+    gold: {
+      roomUpgradeEligibility: {
+        type: Boolean,
+        default: true
+      },
+      pointsMultiplier: {
+        type: Number,
+        default: 1.5
+      },
+      complimentaryServices: [String],
+      priorityCheckIn: {
+        type: Boolean,
+        default: true
+      },
+      lateCheckoutHours: {
+        type: Number,
+        default: 2
+      }
+    },
+    platinum: {
+      roomUpgradeEligibility: {
+        type: Boolean,
+        default: true
+      },
+      pointsMultiplier: {
+        type: Number,
+        default: 1.75
+      },
+      complimentaryServices: [String],
+      priorityCheckIn: {
+        type: Boolean,
+        default: true
+      },
+      lateCheckoutHours: {
+        type: Number,
+        default: 4
+      },
+      conciergeAccess: {
+        type: Boolean,
+        default: true
+      }
+    },
+    diamond: {
+      roomUpgradeEligibility: {
+        type: Boolean,
+        default: true
+      },
+      pointsMultiplier: {
+        type: Number,
+        default: 2
+      },
+      complimentaryServices: [String],
+      priorityCheckIn: {
+        type: Boolean,
+        default: true
+      },
+      lateCheckoutHours: {
+        type: Number,
+        default: 6
+      },
+      conciergeAccess: {
+        type: Boolean,
+        default: true
+      },
+      executiveFloorAccess: {
+        type: Boolean,
+        default: true
+      },
+      guaranteedRoomUpgrade: {
+        type: Boolean,
+        default: true
+      }
+    }
+  },
+
+  // Spending and activity tracking
+  activityTracking: {
+    currentYearSpending: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    currentYearStays: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    currentYearNights: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    lastActivityDate: Date,
+    spendingHistory: [{
+      year: Number,
+      totalSpent: Number,
+      totalStays: Number,
+      totalNights: Number,
+      tierAchieved: String
+    }],
+    milestoneAchievements: [{
+      milestone: String,
+      achievedDate: Date,
+      value: Number,
+      description: String
+    }]
+  },
+
+  // Preference management
+  enhancedPreferences: {
+    roomPreferences: {
+      preferredFloor: String,
+      preferredRoomType: String,
+      preferredView: String,
+      smokingPreference: {
+        type: String,
+        enum: ['non-smoking', 'smoking', 'no-preference'],
+        default: 'non-smoking'
+      },
+      bedType: {
+        type: String,
+        enum: ['king', 'queen', 'twin', 'sofa-bed', 'no-preference'],
+        default: 'no-preference'
+      }
+    },
+    servicePreferences: {
+      preferredCheckInTime: String,
+      preferredCheckOutTime: String,
+      housekeepingPreference: {
+        type: String,
+        enum: ['morning', 'afternoon', 'evening', 'do-not-disturb'],
+        default: 'afternoon'
+      },
+      turndownService: {
+        type: Boolean,
+        default: false
+      },
+      wakeUpCall: {
+        type: Boolean,
+        default: false
+      }
+    },
+    diningPreferences: {
+      cuisinePreferences: [String],
+      diningRestrictions: [String],
+      preferredRestaurants: [String],
+      allergies: [String]
+    },
+    communicationPreferences: {
+      preferredLanguage: {
+        type: String,
+        default: 'en'
+      },
+      contactMethod: {
+        type: String,
+        enum: ['email', 'phone', 'sms', 'whatsapp', 'mobile-app'],
+        default: 'email'
+      },
+      marketingOptIn: {
+        type: Boolean,
+        default: true
+      },
+      promotionalOffers: {
+        type: Boolean,
+        default: true
+      }
+    }
+  },
+
+  // Recognition and rewards
+  recognition: {
+    recognitionLevel: {
+      type: String,
+      enum: ['standard', 'valued', 'preferred', 'distinguished', 'exceptional'],
+      default: 'standard'
+    },
+    recognitionScore: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
+    },
+    lifetimeValue: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    averageRating: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 5
+    },
+    feedbackCount: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    complaintCount: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    complimentCount: {
+      type: Number,
+      default: 0,
+      min: 0
+    }
+  },
+
+  // Personalization
+  personalTouch: {
+    personalizedGreeting: String,
+    specialOccasions: [{
+      type: {
+        type: String,
+        enum: ['birthday', 'anniversary', 'wedding', 'business', 'personal']
+      },
+      date: Date,
+      description: String,
+      acknowledged: {
+        type: Boolean,
+        default: false
+      }
+    }],
+    guestHistory: [{
+      stayDate: Date,
+      roomNumber: String,
+      roomType: String,
+      purpose: String,
+      satisfaction: Number,
+      specialServices: [String],
+      notes: String
+    }],
+    relationshipManager: {
+      type: mongoose.Schema.ObjectId,
+      ref: 'User'
+    }
   }
 }, {
   timestamps: true,
@@ -271,11 +580,21 @@ vipGuestSchema.index({ assignedConcierge: 1 });
 vipGuestSchema.index({ anniversaryDate: 1 });
 vipGuestSchema.index({ expiryDate: 1 });
 
-// Pre-save middleware to set updatedBy
+// Enhanced pre-save middleware
 vipGuestSchema.pre('save', function(next) {
   if (this.isModified() && !this.isNew) {
     this.updatedBy = this.createdBy; // This will be updated by controller
   }
+
+  // Auto-update tier based on qualifications
+  this.updateTierStatus();
+
+  // Calculate recognition score
+  this.calculateRecognitionScore();
+
+  // Update next tier requirements
+  this.calculateNextTierRequirements();
+
   next();
 });
 
@@ -444,6 +763,167 @@ vipGuestSchema.methods.updateQualificationCriteria = function(stayData) {
   }
   
   return this.save();
+};
+
+// Method to update tier status automatically
+vipGuestSchema.methods.updateTierStatus = function() {
+  const newTier = this.calculateVIPLevel();
+
+  if (newTier && newTier !== this.loyaltyProgram.currentTier) {
+    this.loyaltyProgram.previousTier = this.loyaltyProgram.currentTier;
+    this.loyaltyProgram.currentTier = newTier;
+    this.vipLevel = newTier; // Keep backward compatibility
+
+    if (newTier > this.loyaltyProgram.previousTier) {
+      this.loyaltyProgram.tierUpgradeDate = new Date();
+    } else {
+      this.loyaltyProgram.tierDowngradeDate = new Date();
+    }
+  }
+};
+
+// Calculate recognition score
+vipGuestSchema.methods.calculateRecognitionScore = function() {
+  let score = 0;
+
+  // Base scoring from qualifications
+  const { totalStays, totalSpent, averageRating } = this.qualificationCriteria;
+
+  // Spending component (30%)
+  if (totalSpent > 100000) score += 30;
+  else if (totalSpent > 50000) score += 25;
+  else if (totalSpent > 25000) score += 20;
+  else if (totalSpent > 10000) score += 15;
+  else score += Math.min(totalSpent / 1000, 10);
+
+  // Frequency component (25%)
+  if (totalStays > 20) score += 25;
+  else if (totalStays > 15) score += 20;
+  else if (totalStays > 10) score += 15;
+  else if (totalStays > 5) score += 10;
+  else score += totalStays * 2;
+
+  // Satisfaction component (25%)
+  if (averageRating > 4.5) score += 25;
+  else if (averageRating > 4.0) score += 20;
+  else if (averageRating > 3.5) score += 15;
+  else if (averageRating > 3.0) score += 10;
+  else score += averageRating * 3;
+
+  // Feedback and engagement component (20%)
+  const feedbackRatio = this.recognition.feedbackCount > 0 ?
+    (this.recognition.complimentCount / this.recognition.feedbackCount) : 0;
+  score += feedbackRatio * 10;
+
+  // Penalty for complaints
+  score -= this.recognition.complaintCount * 3;
+
+  // Current year activity bonus
+  if (this.activityTracking.currentYearStays > 5) score += 10;
+  if (this.activityTracking.currentYearSpending > 25000) score += 10;
+
+  this.recognition.recognitionScore = Math.max(0, Math.min(score, 100));
+};
+
+// Calculate next tier requirements
+vipGuestSchema.methods.calculateNextTierRequirements = function() {
+  const currentTier = this.loyaltyProgram.currentTier;
+  const requirements = {
+    staysNeeded: 0,
+    nightsNeeded: 0,
+    spendingNeeded: 0
+  };
+
+  const tierRequirements = {
+    member: { stays: 2, nights: 5, spending: 2000 },
+    silver: { stays: 5, nights: 10, spending: 5000 },
+    gold: { stays: 10, nights: 25, spending: 10000 },
+    platinum: { stays: 15, nights: 50, spending: 25000 },
+    diamond: { stays: 20, nights: 75, spending: 50000 }
+  };
+
+  const tiers = ['member', 'silver', 'gold', 'platinum', 'diamond'];
+  const currentIndex = tiers.indexOf(currentTier);
+
+  if (currentIndex < tiers.length - 1) {
+    const nextTier = tiers[currentIndex + 1];
+    const nextReqs = tierRequirements[nextTier];
+
+    requirements.staysNeeded = Math.max(0, nextReqs.stays - this.qualificationCriteria.totalStays);
+    requirements.nightsNeeded = Math.max(0, nextReqs.nights - this.qualificationCriteria.totalNights);
+    requirements.spendingNeeded = Math.max(0, nextReqs.spending - this.qualificationCriteria.totalSpent);
+  }
+
+  this.loyaltyProgram.nextTierRequirements = requirements;
+};
+
+// Method to add points
+vipGuestSchema.methods.addLoyaltyPoints = function(points, source = 'stay') {
+  const multiplier = this.tierBenefits[this.loyaltyProgram.currentTier]?.pointsMultiplier || 1;
+  const finalPoints = Math.round(points * multiplier);
+
+  this.loyaltyProgram.pointsBalance += finalPoints;
+  this.loyaltyProgram.pointsEarned += finalPoints;
+
+  // Record milestone if significant
+  if (finalPoints >= 1000) {
+    this.activityTracking.milestoneAchievements.push({
+      milestone: 'points_earned',
+      achievedDate: new Date(),
+      value: finalPoints,
+      description: `Earned ${finalPoints} points from ${source}`
+    });
+  }
+
+  return this.save();
+};
+
+// Method to redeem points
+vipGuestSchema.methods.redeemPoints = function(points, description = '') {
+  if (this.loyaltyProgram.pointsBalance < points) {
+    throw new Error('Insufficient points balance');
+  }
+
+  this.loyaltyProgram.pointsBalance -= points;
+  this.loyaltyProgram.pointsRedeemed += points;
+
+  // Record redemption
+  this.activityTracking.milestoneAchievements.push({
+    milestone: 'points_redeemed',
+    achievedDate: new Date(),
+    value: points,
+    description: description || `Redeemed ${points} points`
+  });
+
+  return this.save();
+};
+
+// Method to add special occasion
+vipGuestSchema.methods.addSpecialOccasion = function(occasionData) {
+  if (!this.personalTouch.specialOccasions) {
+    this.personalTouch.specialOccasions = [];
+  }
+
+  this.personalTouch.specialOccasions.push({
+    type: occasionData.type,
+    date: occasionData.date,
+    description: occasionData.description,
+    acknowledged: false
+  });
+
+  return this.save();
+};
+
+// Method to get tier benefits
+vipGuestSchema.methods.getCurrentTierBenefits = function() {
+  const currentTier = this.loyaltyProgram.currentTier;
+  const benefits = this.tierBenefits[currentTier] || {};
+
+  // Combine with general benefits
+  return {
+    ...benefits,
+    generalBenefits: this.getBenefitSummary()
+  };
 };
 
 // Instance method to get benefit summary

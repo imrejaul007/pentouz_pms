@@ -1,43 +1,23 @@
-import TapeChartModels from '../models/TapeChart.js';
+import AdvancedReservation from '../models/AdvancedReservation.js';
+import RoomUpgrade from '../models/RoomUpgrade.js';
+import WaitingList from '../models/WaitingList.js';
+import VIPGuest from '../models/VIPGuest.js';
 import Booking from '../models/Booking.js';
 import Room from '../models/Room.js';
 import { validationResult } from 'express-validator';
-
-const { AdvancedReservation } = TapeChartModels;
+import mongoose from 'mongoose';
 
 class AdvancedReservationsController {
-  // Create a new advanced reservation
+  /**
+   * Create new advanced reservation
+   */
   async createAdvancedReservation(req, res) {
     try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          message: 'Validation errors',
-          errors: errors.array()
-        });
-      }
+      const hotelId = req.user.hotelId;
+      const userId = req.user.id;
 
-      const {
-        bookingId,
-        reservationType,
-        priority,
-        roomPreferences,
-        guestProfile,
-        specialRequests,
-        waitlistInfo
-      } = req.body;
-
-      // Validate bookingId
-      if (!bookingId || bookingId.trim() === '') {
-        return res.status(400).json({
-          success: false,
-          message: 'Booking ID is required'
-        });
-      }
-
-      // Verify booking exists
-      const booking = await Booking.findById(bookingId);
+      // Validate booking exists
+      const booking = await Booking.findById(req.body.bookingId);
       if (!booking) {
         return res.status(404).json({
           success: false,
@@ -45,386 +25,310 @@ class AdvancedReservationsController {
         });
       }
 
-      // Create advanced reservation
-      const advancedReservation = new AdvancedReservation({
-        reservationId: `ADV-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        bookingId,
-        reservationType: reservationType || 'standard',
-        priority: priority || 'medium',
-        roomPreferences: roomPreferences || {},
-        guestProfile: guestProfile || {},
-        specialRequests: specialRequests || [],
-        waitlistInfo: waitlistInfo || null,
-        roomAssignments: [],
-        upgrades: [],
-        compRooms: [],
-        reservationFlags: []
+      // Check if advanced reservation already exists for this booking
+      const existingReservation = await AdvancedReservation.findOne({
+        bookingId: req.body.bookingId
       });
 
-      await advancedReservation.save();
+      if (existingReservation) {
+        return res.status(400).json({
+          success: false,
+          message: 'Advanced reservation already exists for this booking'
+        });
+      }
+
+      // Create advanced reservation
+      const reservationData = {
+        ...req.body,
+        hotelId,
+        createdBy: userId
+      };
+
+      const reservation = new AdvancedReservation(reservationData);
+      await reservation.save();
 
       // Populate the created reservation
-      const populatedReservation = await AdvancedReservation.findById(advancedReservation._id)
-        .populate('bookingId', 'bookingNumber guestName checkIn checkOut status')
-        .populate('roomAssignments.roomId', 'roomNumber type floor')
-        .populate('roomAssignments.assignedBy', 'name email')
-        .populate('specialRequests.assignedTo', 'name email');
+      await reservation.populate([
+        { path: 'bookingId', select: 'bookingNumber checkIn checkOut guestDetails' },
+        { path: 'createdBy', select: 'name email' }
+      ]);
 
       res.status(201).json({
         success: true,
-        message: 'Advanced reservation created successfully',
-        data: populatedReservation
+        data: reservation
       });
-
     } catch (error) {
-      console.error('Create advanced reservation error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to create advanced reservation',
-        error: error.message
-      });
+      if (error.code === 11000) {
+        return res.status(400).json({
+          success: false,
+          message: 'Advanced reservation already exists for this booking'
+        });
+      }
+      res.status(400).json({ success: false, message: error.message });
     }
   }
 
-  // Get all advanced reservations
+  /**
+   * Get all advanced reservations with filters and pagination
+   */
   async getAdvancedReservations(req, res) {
     try {
+      const hotelId = req.user.hotelId;
       const {
-        reservationType,
-        priority,
-        status,
-        hasWaitlist,
-        search,
         page = 1,
         limit = 20,
         sortBy = 'createdAt',
-        sortOrder = 'desc'
+        sortOrder = 'desc',
+        reservationType,
+        priority,
+        hasWaitlist,
+        status,
+        vipStatus
       } = req.query;
 
-      const query = {};
+      // Build filter object
+      const filter = { hotelId };
 
-      if (reservationType) query.reservationType = reservationType;
-      if (priority) query.priority = priority;
-      if (hasWaitlist === 'true') query.waitlistInfo = { $ne: null };
+      if (reservationType) filter.reservationType = reservationType;
+      if (priority) filter.priority = priority;
+      if (status) filter.status = status;
+      if (hasWaitlist === 'true') filter['waitlistInfo.isOnWaitlist'] = true;
+      if (vipStatus === 'true') filter['guestProfile.vipStatus'] = true;
 
-      const sortOptions = {};
-      sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1;
-
+      // Calculate pagination
       const skip = (parseInt(page) - 1) * parseInt(limit);
+      const sortObj = {};
+      sortObj[sortBy] = sortOrder === 'asc' ? 1 : -1;
 
-      let advancedReservations, total;
-
-      // Handle search functionality
-      if (search) {
-        // First, find bookings that match the search term
-        const matchingBookings = await Booking.find({
-          $or: [
-            { bookingNumber: { $regex: search, $options: 'i' } },
-            { guestName: { $regex: search, $options: 'i' } }
-          ]
-        }).select('_id');
-
-        const bookingIds = matchingBookings.map(b => b._id);
-
-        // Combine reservation search with booking search
-        const searchQuery = {
-          ...query,
-          $or: [
-            { reservationId: { $regex: search, $options: 'i' } },
-            { 'guestProfile.loyaltyNumber': { $regex: search, $options: 'i' } },
-            { bookingId: { $in: bookingIds } }
-          ]
-        };
-
-        [advancedReservations, total] = await Promise.all([
-          AdvancedReservation.find(searchQuery)
-            .populate('bookingId', 'bookingNumber guestName checkIn checkOut status totalAmount')
-            .populate('roomAssignments.roomId', 'roomNumber type floor')
-            .populate('roomAssignments.assignedBy', 'name email')
-            .sort(sortOptions)
-            .skip(skip)
-            .limit(parseInt(limit)),
-          AdvancedReservation.countDocuments(searchQuery)
-        ]);
-      } else {
-        [advancedReservations, total] = await Promise.all([
-          AdvancedReservation.find(query)
-            .populate('bookingId', 'bookingNumber guestName checkIn checkOut status totalAmount')
-            .populate('roomAssignments.roomId', 'roomNumber type floor')
-            .populate('roomAssignments.assignedBy', 'name email')
-            .sort(sortOptions)
-            .skip(skip)
-            .limit(parseInt(limit)),
-          AdvancedReservation.countDocuments(query)
-        ]);
-      }
+      // Execute query with population
+      const [reservations, totalCount] = await Promise.all([
+        AdvancedReservation.find(filter)
+          .populate('bookingId', 'bookingNumber checkIn checkOut guestDetails totalAmount')
+          .populate('createdBy', 'name email')
+          .sort(sortObj)
+          .skip(skip)
+          .limit(parseInt(limit)),
+        AdvancedReservation.countDocuments(filter)
+      ]);
 
       res.json({
         success: true,
-        data: advancedReservations,
-        pagination: {
-          current: parseInt(page),
-          pages: Math.ceil(total / parseInt(limit)),
-          total
+        data: {
+          reservations,
+          pagination: {
+            currentPage: parseInt(page),
+            totalPages: Math.ceil(totalCount / parseInt(limit)),
+            totalCount,
+            hasNext: skip + parseInt(limit) < totalCount,
+            hasPrev: parseInt(page) > 1
+          }
         }
       });
-
     } catch (error) {
-      console.error('Get advanced reservations error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to fetch advanced reservations',
-        error: error.message
-      });
+      res.status(500).json({ success: false, message: error.message });
     }
   }
 
-  // Get advanced reservation by ID
+  /**
+   * Get single advanced reservation by ID
+   */
   async getAdvancedReservation(req, res) {
     try {
       const { id } = req.params;
+      const hotelId = req.user.hotelId;
 
-      const advancedReservation = await AdvancedReservation.findById(id)
-        .populate('bookingId', 'bookingNumber guestName checkIn checkOut status totalAmount rooms')
-        .populate('roomAssignments.roomId', 'roomNumber type floor amenities')
-        .populate('roomAssignments.assignedBy', 'name email')
-        .populate('specialRequests.assignedTo', 'name email department')
-        .populate('upgrades.approvedBy', 'name email')
-        .populate('compRooms.authorizedBy', 'name email')
-        .populate('reservationFlags.createdBy', 'name email');
+      const reservation = await AdvancedReservation.findOne({
+        _id: id,
+        hotelId
+      })
+        .populate('bookingId', 'bookingNumber checkIn checkOut guestDetails totalAmount roomType')
+        .populate('createdBy', 'name email')
+        .populate('updatedBy', 'name email')
+        .populate('roomAssignments.roomId', 'roomNumber roomType floor')
+        .populate('roomAssignments.assignedBy', 'name email');
 
-      if (!advancedReservation) {
+      if (!reservation) {
         return res.status(404).json({
           success: false,
           message: 'Advanced reservation not found'
         });
       }
 
-      res.json({
-        success: true,
-        data: advancedReservation
-      });
-
+      res.json({ success: true, data: reservation });
     } catch (error) {
-      console.error('Get advanced reservation error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to fetch advanced reservation',
-        error: error.message
-      });
+      res.status(500).json({ success: false, message: error.message });
     }
   }
 
-  // Update advanced reservation
+  /**
+   * Update advanced reservation
+   */
   async updateAdvancedReservation(req, res) {
     try {
       const { id } = req.params;
-      const updates = req.body;
+      const hotelId = req.user.hotelId;
+      const userId = req.user.id;
 
-      const advancedReservation = await AdvancedReservation.findById(id);
-      if (!advancedReservation) {
+      const updateData = {
+        ...req.body,
+        updatedBy: userId
+      };
+
+      const reservation = await AdvancedReservation.findOneAndUpdate(
+        { _id: id, hotelId },
+        updateData,
+        { new: true, runValidators: true }
+      )
+        .populate('bookingId', 'bookingNumber checkIn checkOut guestDetails')
+        .populate('updatedBy', 'name email');
+
+      if (!reservation) {
         return res.status(404).json({
           success: false,
           message: 'Advanced reservation not found'
         });
       }
 
-      // Update allowed fields
-      const allowedUpdates = [
-        'reservationType', 'priority', 'roomPreferences', 'guestProfile',
-        'specialRequests', 'waitlistInfo', 'reservationFlags'
-      ];
-
-      allowedUpdates.forEach(field => {
-        if (updates[field] !== undefined) {
-          advancedReservation[field] = updates[field];
-        }
-      });
-
-      await advancedReservation.save();
-
-      const updatedReservation = await AdvancedReservation.findById(id)
-        .populate('bookingId', 'bookingNumber guestName checkIn checkOut status')
-        .populate('roomAssignments.roomId', 'roomNumber type floor')
-        .populate('roomAssignments.assignedBy', 'name email');
-
-      res.json({
-        success: true,
-        message: 'Advanced reservation updated successfully',
-        data: updatedReservation
-      });
-
+      res.json({ success: true, data: reservation });
     } catch (error) {
-      console.error('Update advanced reservation error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to update advanced reservation',
-        error: error.message
-      });
+      res.status(400).json({ success: false, message: error.message });
     }
   }
 
-  // Assign room to reservation
+  /**
+   * Assign room to advanced reservation
+   */
   async assignRoom(req, res) {
     try {
       const { id } = req.params;
-      const { roomId, assignmentType, notes } = req.body;
+      const { roomId, assignmentType = 'manual', notes } = req.body;
+      const hotelId = req.user.hotelId;
+      const userId = req.user.id;
 
-      const advancedReservation = await AdvancedReservation.findById(id);
-      if (!advancedReservation) {
+      const reservation = await AdvancedReservation.findOne({ _id: id, hotelId });
+      if (!reservation) {
         return res.status(404).json({
           success: false,
           message: 'Advanced reservation not found'
-        });
-      }
-
-      // Verify room exists
-      const room = await Room.findById(roomId);
-      if (!room) {
-        return res.status(404).json({
-          success: false,
-          message: 'Room not found'
         });
       }
 
       // Add room assignment
       const roomAssignment = {
         roomId,
-        roomNumber: room.roomNumber,
-        assignedDate: new Date(),
-        assignmentType: assignmentType || 'manual',
-        assignedBy: req.user._id,
-        notes: notes || ''
+        assignedBy: userId,
+        assignmentType,
+        notes,
+        assignedAt: new Date()
       };
 
-      advancedReservation.roomAssignments.push(roomAssignment);
-      await advancedReservation.save();
+      reservation.roomAssignments.push(roomAssignment);
+      await reservation.save();
 
-      const updatedReservation = await AdvancedReservation.findById(id)
-        .populate('roomAssignments.roomId', 'roomNumber type floor')
-        .populate('roomAssignments.assignedBy', 'name email');
+      await reservation.populate([
+        { path: 'roomAssignments.roomId', select: 'roomNumber roomType floor' },
+        { path: 'roomAssignments.assignedBy', select: 'name email' }
+      ]);
 
-      res.json({
-        success: true,
-        message: 'Room assigned successfully',
-        data: updatedReservation
-      });
-
+      res.json({ success: true, data: reservation });
     } catch (error) {
-      console.error('Assign room error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to assign room',
-        error: error.message
-      });
+      res.status(400).json({ success: false, message: error.message });
     }
   }
 
-  // Add upgrade to reservation
+  /**
+   * Add upgrade to advanced reservation
+   */
   async addUpgrade(req, res) {
     try {
       const { id } = req.params;
-      const { fromRoomType, toRoomType, upgradeType, upgradeReason, additionalCharge } = req.body;
+      const upgradeData = req.body;
+      const hotelId = req.user.hotelId;
 
-      const advancedReservation = await AdvancedReservation.findById(id);
-      if (!advancedReservation) {
+      const reservation = await AdvancedReservation.findOne({ _id: id, hotelId });
+      if (!reservation) {
         return res.status(404).json({
           success: false,
           message: 'Advanced reservation not found'
         });
       }
 
-      // Add upgrade
-      const upgrade = {
-        fromRoomType,
-        toRoomType,
-        upgradeType,
-        upgradeReason: upgradeReason || '',
-        additionalCharge: additionalCharge || 0,
-        approvedBy: req.user._id,
-        upgradeDate: new Date()
-      };
-
-      advancedReservation.upgrades.push(upgrade);
-      await advancedReservation.save();
-
-      const updatedReservation = await AdvancedReservation.findById(id)
-        .populate('upgrades.approvedBy', 'name email');
+      // Add upgrade using the model method
+      await reservation.addUpgrade(upgradeData);
 
       res.json({
         success: true,
-        message: 'Upgrade added successfully',
-        data: updatedReservation
+        data: reservation,
+        message: 'Upgrade added successfully'
       });
-
     } catch (error) {
-      console.error('Add upgrade error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to add upgrade',
-        error: error.message
-      });
+      res.status(400).json({ success: false, message: error.message });
     }
   }
 
-  // Get advanced reservations statistics
+  /**
+   * Get advanced reservations statistics for dashboard
+   * This is the CRITICAL endpoint that the frontend calls
+   */
   async getAdvancedReservationsStats(req, res) {
     try {
-      const stats = await AdvancedReservation.aggregate([
-        {
-          $group: {
-            _id: '$reservationType',
-            count: { $sum: 1 }
-          }
-        }
-      ]);
+      const hotelId = req.user.hotelId || req.query.hotelId;
 
-      const priorityStats = await AdvancedReservation.aggregate([
-        {
-          $group: {
-            _id: '$priority',
-            count: { $sum: 1 }
-          }
-        }
-      ]);
+      if (!hotelId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Hotel ID is required'
+        });
+      }
 
-      const upgradeStats = await AdvancedReservation.aggregate([
-        { $unwind: '$upgrades' },
-        {
-          $group: {
-            _id: '$upgrades.upgradeType',
-            count: { $sum: 1 },
-            totalCharge: { $sum: '$upgrades.additionalCharge' }
-          }
-        }
-      ]);
+      // Get reservation statistics using the model method
+      const stats = await AdvancedReservation.getReservationStats(hotelId);
 
-      const waitlistCount = await AdvancedReservation.countDocuments({
-        waitlistInfo: { $ne: null }
-      });
+      // Get waitlist count from WaitingList collection
+      const waitlistCount = await WaitingList.countDocuments({ hotelId });
 
-      const recentReservations = await AdvancedReservation.find()
-        .populate('bookingId', 'bookingNumber guestName')
+      // Get VIP guest count
+      const vipCount = await VIPGuest.countDocuments({ hotelId });
+
+      // Get recent reservations for preview
+      const recentReservations = await AdvancedReservation.find({ hotelId })
+        .populate('bookingId', 'bookingNumber guestDetails')
         .sort({ createdAt: -1 })
-        .limit(5);
+        .limit(5)
+        .select('reservationId reservationType priority guestProfile.vipStatus createdAt');
+
+      // Format stats for frontend consumption
+      const formattedStats = {
+        typeStats: Object.entries(stats.byType).map(([type, count]) => ({
+          _id: type,
+          count: count
+        })),
+        upgradeStats: [
+          { _id: 'approved', count: stats.upgradeRequests }
+        ],
+        waitlistCount: waitlistCount,
+        totalReservations: stats.totalReservations,
+        vipReservations: stats.vipReservations,
+        pendingApprovals: stats.pendingApprovals,
+        specialRequests: stats.specialRequests,
+        avgPriorityScore: stats.avgPriorityScore,
+        avgComplexityScore: stats.avgComplexityScore,
+        priorityStats: Object.entries(stats.byPriority).map(([priority, count]) => ({
+          _id: priority,
+          count: count
+        })),
+        recentReservations: recentReservations
+      };
 
       res.json({
         success: true,
-        data: {
-          typeStats: stats,
-          priorityStats,
-          upgradeStats,
-          waitlistCount,
-          recentReservations
-        }
+        data: formattedStats
       });
-
     } catch (error) {
-      console.error('Get advanced reservations stats error:', error);
+      console.error('Advanced Reservations Stats Error:', error);
       res.status(500).json({
         success: false,
-        message: 'Failed to fetch advanced reservations statistics',
-        error: error.message
+        message: error.message
       });
     }
   }
@@ -473,26 +377,92 @@ class AdvancedReservationsController {
     }
   }
 
-  // Get available bookings for creating advanced reservations
+  /**
+   * Get available bookings for creating advanced reservations
+   */
   async getAvailableBookings(req, res) {
     try {
-      const bookings = await Booking.find({ status: { $in: ['confirmed', 'checked_in'] } })
-        .select('_id bookingNumber guestName checkIn checkOut status totalAmount')
-        .sort({ checkIn: 1 })
-        .limit(50);
+      const hotelId = req.user.hotelId;
+      const { page = 1, limit = 20, search } = req.query;
+
+      // Get booking IDs that already have advanced reservations
+      const existingAdvancedReservations = await AdvancedReservation.find({ hotelId })
+        .select('bookingId')
+        .lean();
+
+      const existingBookingIds = existingAdvancedReservations.map(ar => ar.bookingId);
+
+      // Build query for available bookings
+      const query = {
+        hotelId,
+        _id: { $nin: existingBookingIds },
+        status: { $in: ['confirmed', 'checked_in'] }
+      };
+
+      // Add search functionality
+      if (search) {
+        query.$or = [
+          { bookingNumber: { $regex: search, $options: 'i' } },
+          { 'guestDetails.firstName': { $regex: search, $options: 'i' } },
+          { 'guestDetails.lastName': { $regex: search, $options: 'i' } }
+        ];
+      }
+
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+
+      const [bookings, totalCount] = await Promise.all([
+        Booking.find(query)
+          .select('bookingNumber checkIn checkOut guestDetails roomType totalAmount status')
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(parseInt(limit)),
+        Booking.countDocuments(query)
+      ]);
 
       res.json({
         success: true,
-        data: bookings
+        data: {
+          bookings,
+          pagination: {
+            currentPage: parseInt(page),
+            totalPages: Math.ceil(totalCount / parseInt(limit)),
+            totalCount,
+            hasNext: skip + parseInt(limit) < totalCount,
+            hasPrev: parseInt(page) > 1
+          }
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+
+  /**
+   * Delete advanced reservation
+   */
+  async deleteAdvancedReservation(req, res) {
+    try {
+      const { id } = req.params;
+      const hotelId = req.user.hotelId;
+
+      const reservation = await AdvancedReservation.findOneAndDelete({
+        _id: id,
+        hotelId
       });
 
-    } catch (error) {
-      console.error('Get available bookings error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to fetch available bookings',
-        error: error.message
+      if (!reservation) {
+        return res.status(404).json({
+          success: false,
+          message: 'Advanced reservation not found'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Advanced reservation deleted successfully'
       });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
     }
   }
 }

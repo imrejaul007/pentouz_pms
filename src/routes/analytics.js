@@ -25,7 +25,8 @@ import {
   getRoomTypeProfitability,
   getRevenueForecast,
   getSmartRecommendations,
-  getProfitabilityMetrics
+  getProfitabilityMetrics,
+  getHotelMetrics
 } from '../controllers/analyticsController.js';
 
 const router = express.Router();
@@ -164,5 +165,8 @@ router.get('/room-type-profitability', authorize(['admin', 'manager']), getRoomT
 router.get('/revenue-forecast', authorize(['admin', 'manager']), getRevenueForecast);
 router.get('/smart-recommendations', authorize(['admin', 'manager']), getSmartRecommendations);
 router.get('/profitability-metrics', authorize(['admin', 'manager']), getProfitabilityMetrics);
+
+// Hotel Metrics for Multi-Property Manager
+router.get('/hotel/:hotelId/metrics', authorize(['admin', 'manager', 'staff']), getHotelMetrics);
 
 export default router;

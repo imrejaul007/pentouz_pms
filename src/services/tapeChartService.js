@@ -607,9 +607,11 @@ class TapeChartService {
 
       // If no room configurations exist, create them from existing rooms
       if (!roomConfigs || roomConfigs.length === 0) {
-        const rooms = await Room.find({ isActive: true });
+        console.log('🔧 No room configurations found, creating from existing rooms...');
+        const rooms = await Room.find({ isActive: true }).sort({ roomNumber: 1 });
+        console.log(`🔧 Found ${rooms.length} active rooms in database`);
         roomConfigs = [];
-        
+
         for (const room of rooms) {
           // Create a basic room configuration for each room
           const config = {
@@ -634,6 +636,9 @@ class TapeChartService {
           };
           roomConfigs.push(config);
         }
+        console.log(`🔧 Created ${roomConfigs.length} room configurations from database rooms`);
+      } else {
+        console.log(`🔧 Using existing ${roomConfigs.length} room configurations`);
       }
 
       // Get ALL bookings for the date range (don't filter by status in database)
@@ -656,13 +661,14 @@ class TapeChartService {
 
       console.log(`🚀 TAPE CHART DEBUG - Found ${allBookings.length} total bookings in date range`);
       
-      // Filter bookings by status in application logic - EXCLUDE checked-out and cancelled bookings from TapeChart
+      // Filter bookings by status in application logic - INCLUDE ALL ACTIVE statuses for TapeChart
       const bookings = allBookings.filter(booking => {
-        const isValidStatus = ['confirmed', 'checked_in', 'pending', 'modified'].includes(booking.status);
+        // Include all non-cancelled bookings for tape chart display
+        const isValidStatus = ['confirmed', 'checked_in', 'pending', 'modified', 'checked_out'].includes(booking.status);
         console.log(`🚀 TAPE CHART DEBUG - Booking ${booking._id} (${booking.userId?.name}) status: ${booking.status}, valid: ${isValidStatus}`);
         return isValidStatus;
       });
-      
+
       console.log(`🚀 TAPE CHART DEBUG - Filtered to ${bookings.length} bookings with valid statuses`);
 
 
@@ -1687,13 +1693,34 @@ class TapeChartService {
         return acc;
       }, {});
 
+      console.log('🔧 Room status breakdown:', roomsByStatus);
+
+      // Map database statuses to tape chart statuses
       const occupiedRooms = roomsByStatus.occupied || 0;
       const availableRooms = roomsByStatus.vacant || 0;
-      const maintenanceRooms = roomsByStatus.maintenance || 0;
+      const maintenanceRooms = (roomsByStatus.maintenance || 0) + (roomsByStatus.out_of_order || 0);
       const dirtyRooms = roomsByStatus.dirty || 0;
       const blockedRooms = roomsByStatus.blocked || 0;
 
-      const occupancyRate = totalRooms > 0 ? (occupiedRooms / totalRooms) * 100 : 0;
+      // Calculate reserved rooms from active bookings
+      const now = new Date();
+      const reservedRooms = bookings.filter(booking => {
+        return ['confirmed', 'checked_in'].includes(booking.status) &&
+               new Date(booking.checkIn) <= now &&
+               new Date(booking.checkOut) > now;
+      }).length;
+
+      console.log('🔧 Dashboard calculations:', {
+        totalRooms,
+        availableRooms,
+        occupiedRooms,
+        reservedRooms,
+        maintenanceRooms,
+        dirtyRooms
+      });
+
+      const actualOccupiedRooms = Math.max(occupiedRooms, reservedRooms);
+      const occupancyRate = totalRooms > 0 ? (actualOccupiedRooms / totalRooms) * 100 : 0;
 
       // Calculate revenue metrics
       const totalRevenue = bookings.reduce((sum, booking) => sum + (booking.totalAmount || 0), 0);
@@ -1752,8 +1779,8 @@ class TapeChartService {
         summary: {
           totalRooms,
           availableRooms,
-          occupiedRooms,
-          reservedRooms: bookings.filter(b => b.status === 'confirmed').length,
+          occupiedRooms: actualOccupiedRooms,
+          reservedRooms,
           maintenanceRooms,
           dirtyRooms,
           occupancyRate: Math.round(occupancyRate * 100) / 100,
@@ -1834,8 +1861,8 @@ class TapeChartService {
         // Check if there are available rooms for their preferred dates
         const availableRooms = await Room.countDocuments({
           hotelId: new mongoose.Types.ObjectId(hotelId),
-          roomType: entry.roomType,
-          status: 'available'
+          type: entry.roomType,
+          status: 'vacant'
         });
 
         if (availableRooms > 0) {
@@ -1858,21 +1885,22 @@ class TapeChartService {
         checkIn: { $lte: date },
         checkOut: { $gt: date },
         status: { $in: ['confirmed', 'checked_in'] }
-      }).populate('roomId', 'roomType');
+      }).populate('rooms.roomId', 'type');
 
       // Get available higher-tier rooms for upgrades
       const availableUpgradeRooms = await Room.find({
         hotelId: new mongoose.Types.ObjectId(hotelId),
-        status: 'available'
+        status: 'vacant'
       });
 
       let upgradeCount = 0;
       for (const booking of todayBookings) {
-        const currentRoomType = booking.roomId?.roomType;
+        // Check if booking has rooms and get room type
+        const currentRoomType = booking.rooms?.[0]?.roomId?.type || booking.roomType;
 
         // Check if there are available rooms of higher tier
         const upgradeAvailable = availableUpgradeRooms.some(room => {
-          return this.isUpgrade(currentRoomType, room.roomType);
+          return this.isUpgrade(currentRoomType, room.type);
         });
 
         if (upgradeAvailable) {
