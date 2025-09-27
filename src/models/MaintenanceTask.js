@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import NotificationAutomationService from '../services/notificationAutomationService.js';
 
 /**
  * @swagger
@@ -461,5 +462,141 @@ maintenanceTaskSchema.statics.getUpcomingRecurringTasks = async function(hotelId
   .populate('roomId', 'number type')
   .sort('recurringSchedule.nextDue');
 };
+
+// NOTIFICATION AUTOMATION HOOKS
+maintenanceTaskSchema.post('save', async function(doc) {
+  try {
+    // Get room data for notifications
+    let roomNumber = 'General';
+    if (doc.roomId) {
+      const room = await mongoose.model('Room').findById(doc.roomId).select('roomNumber');
+      roomNumber = room ? room.roomNumber : 'Unknown';
+    }
+
+    // 1. New maintenance task created
+    if (this.isNew) {
+      const notificationType = doc.priority === 'emergency' ? 'maintenance_urgent' : 'maintenance_request_created';
+      const priority = doc.priority === 'emergency' ? 'urgent' : 'medium';
+
+      await NotificationAutomationService.triggerNotification(
+        notificationType,
+        {
+          roomNumber,
+          issueType: doc.type,
+          description: doc.description || doc.title,
+          priority: doc.priority,
+          taskId: doc._id,
+          reportedBy: doc.reportedBy,
+          estimatedCost: doc.estimatedCost,
+          dueDate: doc.dueDate,
+          category: doc.category
+        },
+        'auto',
+        priority,
+        doc.hotelId
+      );
+    }
+
+    // 2. Task assigned to staff
+    if (doc.isModified('assignedTo') && doc.assignedTo) {
+      await NotificationAutomationService.triggerNotification(
+        'maintenance_assigned',
+        {
+          roomNumber,
+          issueType: doc.type,
+          description: doc.description || doc.title,
+          taskId: doc._id,
+          assignedTo: doc.assignedTo,
+          priority: doc.priority,
+          scheduledDate: doc.scheduledDate,
+          dueDate: doc.dueDate,
+          estimatedDuration: doc.estimatedDuration
+        },
+        [doc.assignedTo],
+        doc.priority === 'emergency' ? 'urgent' : 'medium',
+        doc.hotelId
+      );
+    }
+
+    // 3. Task status changed to in_progress
+    if (doc.isModified('status') && doc.status === 'in_progress') {
+      await NotificationAutomationService.triggerNotification(
+        'maintenance_started',
+        {
+          roomNumber,
+          issueType: doc.type,
+          description: doc.description || doc.title,
+          taskId: doc._id,
+          assignedTo: doc.assignedTo,
+          startedDate: doc.startedDate
+        },
+        'auto',
+        'low',
+        doc.hotelId
+      );
+    }
+
+    // 4. Task completed
+    if (doc.isModified('status') && doc.status === 'completed') {
+      await NotificationAutomationService.triggerNotification(
+        'maintenance_completed',
+        {
+          roomNumber,
+          issueType: doc.type,
+          description: doc.description || doc.title,
+          taskId: doc._id,
+          completedDate: doc.completedDate,
+          actualCost: doc.actualCost,
+          actualDuration: doc.actualDuration,
+          reportedBy: doc.reportedBy,
+          assignedTo: doc.assignedTo
+        },
+        'auto',
+        'medium',
+        doc.hotelId
+      );
+    }
+
+    // 5. High-cost maintenance alert (threshold: $500)
+    if (doc.isModified('actualCost') && doc.actualCost && doc.actualCost >= 500) {
+      await NotificationAutomationService.triggerNotification(
+        'maintenance_high_cost',
+        {
+          roomNumber,
+          issueType: doc.type,
+          cost: doc.actualCost,
+          taskId: doc._id,
+          description: doc.description || doc.title,
+          assignedTo: doc.assignedTo
+        },
+        'auto',
+        'high',
+        doc.hotelId
+      );
+    }
+
+    // 6. Emergency maintenance alert
+    if (doc.isModified('priority') && doc.priority === 'emergency') {
+      await NotificationAutomationService.triggerNotification(
+        'maintenance_urgent',
+        {
+          roomNumber,
+          issueType: doc.type,
+          description: doc.description || doc.title,
+          taskId: doc._id,
+          reportedBy: doc.reportedBy,
+          impact: doc.impact,
+          roomOutOfOrder: doc.roomOutOfOrder
+        },
+        'auto',
+        'urgent',
+        doc.hotelId
+      );
+    }
+
+  } catch (error) {
+    console.error('Error in MaintenanceTask notification hook:', error);
+  }
+});
 
 export default mongoose.model('MaintenanceTask', maintenanceTaskSchema);

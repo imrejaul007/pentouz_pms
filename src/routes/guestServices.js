@@ -8,6 +8,7 @@ import { catchAsync } from '../utils/catchAsync.js';
 import { serviceNotificationService } from '../services/serviceNotificationService.js';
 import { validate, schemas } from '../middleware/validation.js';
 import websocketService from '../services/websocketService.js';
+import guestServicePOSIntegration from '../services/guestServicePOSIntegration.js';
 
 const router = express.Router();
 
@@ -142,6 +143,30 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
     }
   }
 
+  // Attempt to create POS order for food-related service requests
+  let posOrder = null;
+  try {
+    posOrder = await guestServicePOSIntegration.createPOSOrderFromServiceRequest(serviceRequest);
+    if (posOrder) {
+      console.log(`POS order ${posOrder.orderNumber} created for service request ${serviceRequest._id}`);
+
+      // Link the service request to the POS order
+      await guestServicePOSIntegration.linkServiceRequestToPOSOrder(serviceRequest, posOrder);
+
+      // Re-populate the updated service request
+      await serviceRequest.populate([
+        { path: 'hotelId', select: 'name' },
+        { path: 'userId', select: 'name email' },
+        { path: 'bookingId', select: 'bookingNumber' },
+        { path: 'assignedTo', select: 'name email role' },
+        { path: 'relatedHotelService', select: 'name type' }
+      ]);
+    }
+  } catch (posError) {
+    // Log POS integration errors but don't fail the service request creation
+    console.error('Failed to create POS order for service request:', posError);
+  }
+
   // Real-time WebSocket notifications for guest service request
   try {
     // Notify hotel staff and admins of new guest service request
@@ -176,7 +201,15 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
 
   res.status(201).json({
     status: 'success',
-    data: { serviceRequest }
+    data: {
+      serviceRequest,
+      ...(posOrder && { posOrder: {
+        _id: posOrder._id,
+        orderNumber: posOrder.orderNumber,
+        totalAmount: posOrder.totalAmount,
+        status: posOrder.status
+      }})
+    }
   });
 }));
 

@@ -73,13 +73,29 @@ class HealthCheckService {
     this.addCheck('redis', async () => {
       try {
         const start = Date.now();
+        // Use same Redis config as notification cache
+        const redisConfig = process.env.REDIS_URL ?
+          { connectionString: process.env.REDIS_URL } :
+          {
+            host: process.env.REDIS_HOST || 'localhost',
+            port: process.env.REDIS_PORT || 6379,
+            password: process.env.REDIS_PASSWORD,
+            username: process.env.REDIS_USERNAME,
+            db: parseInt(process.env.REDIS_DB || '0')
+          };
+
         const redis = new Redis({
-          host: process.env.REDIS_HOST || 'localhost',
-          port: process.env.REDIS_PORT || 6379,
-          password: process.env.REDIS_PASSWORD,
+          ...redisConfig,
           retryDelayOnFailover: 100,
           maxRetriesPerRequest: 1,
-          lazyConnect: true
+          lazyConnect: true,
+          connectTimeout: 3000,
+          retryConnect: false
+        });
+
+        // Suppress Redis connection error logging in health checks
+        redis.on('error', () => {
+          // Ignore errors - we'll handle them below
         });
 
         await redis.ping();

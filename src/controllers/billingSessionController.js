@@ -4,6 +4,7 @@ import Booking from '../models/Booking.js';
 import { ApplicationError } from '../middleware/errorHandler.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import { v4 as uuidv4 } from 'uuid';
+import posSettlementIntegrationService from '../services/posSettlementIntegrationService.js';
 
 // Create a new billing session
 export const createBillingSession = catchAsync(async (req, res) => {
@@ -288,7 +289,7 @@ export const checkoutSession = catchAsync(async (req, res) => {
 
   // Process payment
   billingSession.processPayment(paymentMethod);
-  
+
   if (splitPayments && splitPayments.length > 0) {
     billingSession.splitPayments = splitPayments;
   }
@@ -299,10 +300,37 @@ export const checkoutSession = catchAsync(async (req, res) => {
 
   await billingSession.save();
 
+  // Automatically create/update settlement if session is room_charged or paid
+  let settlementIntegration = null;
+  if (billingSession.isReadyForSettlement() && billingSession.bookingId) {
+    try {
+      const userContext = {
+        userId: req.user._id,
+        userName: req.user.name,
+        userRole: req.user.role
+      };
+
+      settlementIntegration = await posSettlementIntegrationService.createSettlementFromBillingSession(
+        billingSession._id,
+        userContext
+      );
+    } catch (error) {
+      // Log the error but don't fail the checkout
+      console.error('Settlement integration failed:', error.message);
+    }
+  }
+
   res.json({
     status: 'success',
     message: 'Billing session checked out successfully',
-    data: { billingSession }
+    data: {
+      billingSession,
+      settlementIntegration: settlementIntegration ? {
+        settlementId: settlementIntegration.settlement._id,
+        integrationType: settlementIntegration.integration.type,
+        integratedAt: settlementIntegration.integration.integratedAt
+      } : null
+    }
   });
 });
 

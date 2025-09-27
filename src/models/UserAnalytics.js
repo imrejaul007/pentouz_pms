@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import NotificationAutomationService from '../services/notificationAutomationService.js';
 
 /**
  * @swagger
@@ -633,5 +634,95 @@ userAnalyticsSchema.pre('save', function(next) {
   this.updateLifecycleStage();
   next();
 });
+
+// PHASE 6: STAFF PERFORMANCE MONITORING HOOKS
+userAnalyticsSchema.post('save', async function(doc) {
+  try {
+    // Only monitor staff performance for staff users
+    const User = mongoose.model('User');
+    const user = await User.findById(doc.userId).select('role firstName lastName hotelId');
+
+    if (user && ['staff', 'housekeeping', 'maintenance'].includes(user.role)) {
+      const efficiencyScore = doc.performanceMetrics?.efficiencyScore;
+      const taskCompletionRate = doc.performanceMetrics?.taskCompletionRate;
+      const errorRate = doc.performanceMetrics?.errorRate;
+
+      // Trigger alerts for poor performance metrics
+      let shouldAlert = false;
+      let alertReason = [];
+
+      if (efficiencyScore !== undefined && efficiencyScore < 60) {
+        shouldAlert = true;
+        alertReason.push(`Low efficiency score: ${efficiencyScore}%`);
+      }
+
+      if (taskCompletionRate !== undefined && taskCompletionRate < 70) {
+        shouldAlert = true;
+        alertReason.push(`Low task completion: ${taskCompletionRate}%`);
+      }
+
+      if (errorRate !== undefined && errorRate > 15) {
+        shouldAlert = true;
+        alertReason.push(`High error rate: ${errorRate}%`);
+      }
+
+      if (shouldAlert) {
+        const priority = (efficiencyScore < 40 || taskCompletionRate < 50) ? 'high' : 'medium';
+
+        await NotificationAutomationService.triggerNotification(
+          'staff_performance_alert',
+          {
+            staffName: `${user.firstName} ${user.lastName}`,
+            staffId: user._id,
+            role: user.role,
+            efficiencyScore: efficiencyScore || 'N/A',
+            taskCompletionRate: taskCompletionRate || 'N/A',
+            errorRate: errorRate || 'N/A',
+            engagementScore: doc.engagementScore || 0,
+            alertReasons: alertReason,
+            date: doc.date,
+            metric: alertReason.join(', '),
+            timeFrame: 'recent analysis',
+            recommendations: this.generatePerformanceRecommendations(doc),
+            actionRequired: priority === 'high'
+          },
+          'auto',
+          priority,
+          user.hotelId
+        );
+      }
+    }
+
+  } catch (error) {
+    console.error('Error in UserAnalytics notification hook:', error);
+  }
+});
+
+// Helper method to generate performance recommendations
+userAnalyticsSchema.methods.generatePerformanceRecommendations = function(doc) {
+  const recommendations = [];
+
+  if (doc.performanceMetrics?.efficiencyScore < 60) {
+    recommendations.push('Schedule efficiency training session');
+    recommendations.push('Review workflow optimization opportunities');
+  }
+
+  if (doc.performanceMetrics?.taskCompletionRate < 70) {
+    recommendations.push('Analyze task assignment workload');
+    recommendations.push('Consider additional resources or support');
+  }
+
+  if (doc.performanceMetrics?.errorRate > 15) {
+    recommendations.push('Provide refresher training on quality standards');
+    recommendations.push('Implement buddy system for quality assurance');
+  }
+
+  if (doc.engagementScore < 50) {
+    recommendations.push('Schedule one-on-one meeting to discuss engagement');
+    recommendations.push('Review job satisfaction and career development needs');
+  }
+
+  return recommendations.length > 0 ? recommendations : ['Monitor progress and provide regular feedback'];
+};
 
 export default mongoose.model('UserAnalytics', userAnalyticsSchema);

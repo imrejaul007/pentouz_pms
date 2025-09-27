@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import NotificationAutomationService from '../services/notificationAutomationService.js';
 
 const dailyRoutineCheckSchema = new mongoose.Schema({
   hotelId: {
@@ -265,5 +266,176 @@ dailyRoutineCheckSchema.methods.calculateQualityScore = function() {
   this.qualityScore = Math.round(totalScore / itemCount);
   return this.save();
 };
+
+// NOTIFICATION AUTOMATION HOOKS
+dailyRoutineCheckSchema.post('save', async function(doc) {
+  try {
+    // Get room data for notifications
+    const room = await mongoose.model('Room').findById(doc.roomId).select('roomNumber');
+    const roomNumber = room ? room.roomNumber : 'Unknown';
+
+    // 1. New daily check assigned
+    if (this.isNew && doc.status === 'pending') {
+      await NotificationAutomationService.triggerNotification(
+        'daily_check_assigned',
+        {
+          roomNumber,
+          checkId: doc._id,
+          assignedToUserId: doc.checkedBy,
+          checkDate: doc.checkDate
+        },
+        [doc.checkedBy],
+        'medium',
+        doc.hotelId
+      );
+    }
+
+    // 2. Daily check started
+    if (doc.isModified('status') && doc.status === 'in_progress' && doc.startedAt) {
+      await NotificationAutomationService.triggerNotification(
+        'daily_check_started',
+        {
+          roomNumber,
+          checkId: doc._id,
+          startedBy: doc.checkedBy
+        },
+        'auto',
+        'low',
+        doc.hotelId
+      );
+    }
+
+    // 3. Daily check completed
+    if (doc.isModified('status') && doc.status === 'completed') {
+      await NotificationAutomationService.triggerNotification(
+        'daily_check_completed',
+        {
+          roomNumber,
+          checkId: doc._id,
+          qualityScore: doc.qualityScore,
+          completedBy: doc.checkedBy,
+          totalCost: doc.totalCost
+        },
+        'auto',
+        'low',
+        doc.hotelId
+      );
+
+      // Check for low quality score
+      if (doc.qualityScore && doc.qualityScore < 3) {
+        await NotificationAutomationService.triggerNotification(
+          'daily_check_quality_low',
+          {
+            roomNumber,
+            qualityScore: doc.qualityScore,
+            checkId: doc._id
+          },
+          'auto',
+          'medium',
+          doc.hotelId
+        );
+      }
+    }
+
+    // 4. Issues found during check
+    if (doc.issues && doc.issues.length > 0 && doc.isModified('issues')) {
+      const issueDescriptions = doc.issues.map(issue => `${issue.type}: ${issue.description}`).join(', ');
+
+      await NotificationAutomationService.triggerNotification(
+        'daily_check_issues',
+        {
+          roomNumber,
+          checkId: doc._id,
+          issueDescription: issueDescriptions,
+          issueCount: doc.issues.length,
+          urgentIssues: doc.issues.filter(i => i.priority === 'urgent').length
+        },
+        'auto',
+        doc.issues.some(i => i.priority === 'urgent') ? 'high' : 'medium',
+        doc.hotelId
+      );
+    }
+
+    // 5. Inventory tracking notifications
+    if (doc.isModified('items') && doc.items && doc.items.length > 0) {
+      for (const item of doc.items) {
+        // Check for damaged inventory
+        if (item.condition && item.condition === 'damaged') {
+          await NotificationAutomationService.triggerNotification(
+            'inventory_damaged',
+            {
+              roomNumber,
+              itemName: item.name,
+              itemId: item.inventoryItemId,
+              checkId: doc._id,
+              condition: item.condition,
+              notes: item.notes || 'Damaged during room check',
+              checkedBy: doc.checkedBy,
+              estimatedValue: item.unitPrice || 0
+            },
+            'auto',
+            'medium',
+            doc.hotelId
+          );
+        }
+
+        // Check for missing inventory (expected but not found)
+        if (item.expectedQuantity && item.actualQuantity < item.expectedQuantity) {
+          const missingQuantity = item.expectedQuantity - item.actualQuantity;
+          const totalValue = missingQuantity * (item.unitPrice || 0);
+
+          // Determine if theft is suspected (high-value items or large quantity missing)
+          const theftSuspected = totalValue > 100 || (item.unitPrice > 50 && missingQuantity >= 2);
+
+          if (theftSuspected) {
+            await NotificationAutomationService.triggerNotification(
+              'inventory_theft_suspected',
+              {
+                roomNumber,
+                itemName: item.name,
+                itemId: item.inventoryItemId,
+                checkId: doc._id,
+                expectedQuantity: item.expectedQuantity,
+                actualQuantity: item.actualQuantity,
+                missingQuantity,
+                unitValue: item.unitPrice || 0,
+                totalValue,
+                checkedBy: doc.checkedBy,
+                notes: item.notes || 'Significant inventory discrepancy detected',
+                suspicionLevel: totalValue > 500 ? 'High' : 'Medium'
+              },
+              'auto',
+              'urgent',
+              doc.hotelId
+            );
+          } else {
+            await NotificationAutomationService.triggerNotification(
+              'inventory_missing',
+              {
+                roomNumber,
+                itemName: item.name,
+                itemId: item.inventoryItemId,
+                checkId: doc._id,
+                expectedQuantity: item.expectedQuantity,
+                actualQuantity: item.actualQuantity,
+                missingQuantity,
+                unitValue: item.unitPrice || 0,
+                totalValue,
+                checkedBy: doc.checkedBy,
+                notes: item.notes || 'Inventory item not found during check'
+              },
+              'auto',
+              'high',
+              doc.hotelId
+            );
+          }
+        }
+      }
+    }
+
+  } catch (error) {
+    console.error('Error in DailyRoutineCheck notification hook:', error);
+  }
+});
 
 export default mongoose.model('DailyRoutineCheck', dailyRoutineCheckSchema);

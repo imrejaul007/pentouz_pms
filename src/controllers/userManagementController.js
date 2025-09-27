@@ -580,6 +580,174 @@ export const getUserHealthMonitoring = catchAsync(async (req, res) => {
   });
 });
 
+// Update user billing details
+export const updateUserBillingDetails = catchAsync(async (req, res) => {
+  const { userId } = req.params;
+  const billingData = req.body;
+
+  // Find user - guests can update their own billing, staff/admin can update any in their hotel
+  let user;
+  if (req.user.role === 'guest' && req.user._id.toString() !== userId) {
+    throw new ApplicationError('You can only update your own billing details', 403);
+  }
+
+  if (req.user.role === 'guest') {
+    user = await User.findById(userId);
+  } else {
+    // Staff/admin can update guests or users in their hotel
+    user = await User.findOne({
+      _id: userId,
+      $or: [
+        { role: 'guest' },
+        { hotelId: req.user.hotelId }
+      ]
+    });
+  }
+
+  if (!user) {
+    throw new ApplicationError('User not found', 404);
+  }
+
+  // Validate GST number if provided
+  if (billingData.gstNumber && !user.validateGSTNumber(billingData.gstNumber)) {
+    throw new ApplicationError('Invalid GST number format', 400);
+  }
+
+  // Update billing details
+  user.updateBillingDetails(billingData);
+  await user.save();
+
+  res.json({
+    status: 'success',
+    message: 'Billing details updated successfully',
+    data: {
+      billingDetails: user.billingDetails,
+      guestType: user.guestType
+    }
+  });
+});
+
+// Get user billing details
+export const getUserBillingDetails = catchAsync(async (req, res) => {
+  const { userId } = req.params;
+
+  // Check permissions
+  if (req.user.role === 'guest' && req.user._id.toString() !== userId) {
+    throw new ApplicationError('You can only access your own billing details', 403);
+  }
+
+  let user;
+  if (req.user.role === 'guest') {
+    user = await User.findById(userId).select('name email billingDetails guestType');
+  } else {
+    user = await User.findOne({
+      _id: userId,
+      $or: [
+        { role: 'guest' },
+        { hotelId: req.user.hotelId }
+      ]
+    }).select('name email billingDetails guestType role');
+  }
+
+  if (!user) {
+    throw new ApplicationError('User not found', 404);
+  }
+
+  res.json({
+    status: 'success',
+    data: {
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        guestType: user.guestType,
+        billingDetails: user.billingDetails,
+        hasCompleteBillingInfo: user.hasCompleteBillingInfo(),
+        formattedBillingAddress: user.getFormattedBillingAddress()
+      }
+    }
+  });
+});
+
+// Update user profile (name, email, phone)
+export const updateUserProfile = catchAsync(async (req, res) => {
+  const { userId } = req.params;
+  const { name, email, phone } = req.body;
+
+  // Check permissions
+  if (req.user.role === 'guest' && req.user._id.toString() !== userId) {
+    throw new ApplicationError('You can only update your own profile', 403);
+  }
+
+  let user;
+  if (req.user.role === 'guest') {
+    user = await User.findById(userId);
+  } else {
+    user = await User.findOne({
+      _id: userId,
+      $or: [
+        { role: 'guest' },
+        { hotelId: req.user.hotelId }
+      ]
+    });
+  }
+
+  if (!user) {
+    throw new ApplicationError('User not found', 404);
+  }
+
+  // Update allowed fields
+  if (name) user.name = name;
+  if (email && email !== user.email) {
+    // Check if email already exists
+    const existingUser = await User.findOne({ email, _id: { $ne: userId } });
+    if (existingUser) {
+      throw new ApplicationError('Email already exists', 400);
+    }
+    user.email = email;
+  }
+  if (phone) user.phone = phone;
+
+  await user.save();
+
+  res.json({
+    status: 'success',
+    message: 'Profile updated successfully',
+    data: {
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        guestType: user.guestType
+      }
+    }
+  });
+});
+
+// Validate GST number
+export const validateGSTNumber = catchAsync(async (req, res) => {
+  const { gstNumber } = req.body;
+
+  if (!gstNumber) {
+    throw new ApplicationError('GST number is required', 400);
+  }
+
+  const user = new User();
+  const isValid = user.validateGSTNumber(gstNumber);
+
+  res.json({
+    status: 'success',
+    data: {
+      gstNumber,
+      isValid,
+      format: '22AAAAA0000A1Z5'
+    }
+  });
+});
+
 // Helper function to convert users to CSV
 function convertUsersToCSV(users) {
   const headers = [
@@ -589,10 +757,13 @@ function convertUsersToCSV(users) {
     'Role',
     'Hotel',
     'Active',
+    'Guest Type',
+    'GST Number',
+    'Company Name',
     'Created At',
     'Last Login'
   ];
-  
+
   const rows = users.map(user => [
     user.name,
     user.email,
@@ -600,10 +771,13 @@ function convertUsersToCSV(users) {
     user.role,
     user.hotelId?.name || '',
     user.isActive ? 'Yes' : 'No',
+    user.guestType || 'normal',
+    user.billingDetails?.gstNumber || '',
+    user.billingDetails?.companyName || '',
     user.createdAt.toISOString(),
     user.lastLogin ? user.lastLogin.toISOString() : ''
   ]);
-  
+
   return [headers, ...rows].map(row => row.join(',')).join('\n');
 }
 
@@ -619,5 +793,9 @@ export default {
   exportUsers,
   getUserActivityTimeline,
   getUserPerformanceReport,
-  getUserHealthMonitoring
+  getUserHealthMonitoring,
+  updateUserBillingDetails,
+  getUserBillingDetails,
+  updateUserProfile,
+  validateGSTNumber
 };

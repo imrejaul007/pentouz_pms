@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import NotificationAutomationService from '../services/notificationAutomationService.js';
 
 /**
  * @swagger
@@ -353,6 +354,67 @@ reviewSchema.methods.moderate = function(status, notes = '') {
   if (notes) this.moderationNotes = notes;
   if (status === 'rejected') this.isPublished = false;
   return this.save();
+};
+
+// PHASE 6: OPERATIONAL INTELLIGENCE NOTIFICATION HOOKS
+reviewSchema.post('save', async function(doc) {
+  try {
+    // Trigger immediate alerts for very low ratings (1-2 stars)
+    if (this.isNew && doc.rating <= 2) {
+      // Get room information if available
+      let roomNumber = 'Unknown';
+      if (doc.bookingId) {
+        const Booking = mongoose.model('Booking');
+        const booking = await Booking.findById(doc.bookingId).populate('roomId', 'roomNumber');
+        roomNumber = booking?.roomId?.roomNumber || 'Unknown';
+      }
+
+      // Get user information
+      const User = mongoose.model('User');
+      const user = await User.findById(doc.userId).select('firstName lastName email');
+
+      const priority = doc.rating === 1 ? 'urgent' : 'high';
+
+      await NotificationAutomationService.triggerNotification(
+        'guest_satisfaction_low',
+        {
+          guestName: `${user?.firstName || ''} ${user?.lastName || ''}`.trim() || 'Anonymous',
+          guestEmail: user?.email,
+          roomNumber,
+          rating: doc.rating,
+          reviewTitle: doc.title,
+          reviewContent: doc.content,
+          reviewId: doc._id,
+          categories: doc.categories,
+          issueAreas: this.identifyIssueAreas(doc),
+          urgency: doc.rating === 1 ? 'Critical' : 'High',
+          responseRequired: true,
+          createdAt: doc.createdAt || new Date()
+        },
+        'auto',
+        priority,
+        doc.hotelId
+      );
+    }
+
+  } catch (error) {
+    console.error('Error in Review notification hook:', error);
+  }
+});
+
+// Helper method to identify issue areas from review categories
+reviewSchema.methods.identifyIssueAreas = function(review) {
+  const issues = [];
+
+  if (review.categories) {
+    Object.entries(review.categories).forEach(([category, rating]) => {
+      if (rating <= 2) {
+        issues.push(category);
+      }
+    });
+  }
+
+  return issues.length > 0 ? issues : ['General satisfaction'];
 };
 
 export default mongoose.model('Review', reviewSchema);

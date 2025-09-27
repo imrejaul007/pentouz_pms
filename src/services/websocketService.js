@@ -77,12 +77,13 @@ class WebSocketService {
         socket.userRole = decoded.role || 'guest';
         socket.hotelId = decoded.hotelId;
 
-        logger.info('WebSocket authentication successful', {
-          userId: socket.userId,
-          role: socket.userRole,
-          hotelId: socket.hotelId,
-          socketId: socket.id
-        });
+        // Authentication successful - reduced logging to prevent spam
+        // logger.info('WebSocket authentication successful', {
+        //   userId: socket.userId,
+        //   role: socket.userRole,
+        //   hotelId: socket.hotelId,
+        //   socketId: socket.id
+        // });
 
         next();
       } catch (error) {
@@ -110,12 +111,13 @@ class WebSocketService {
   handleConnection(socket) {
     const { userId, userRole, hotelId } = socket;
     
-    logger.info('New WebSocket connection', { 
-      userId, 
-      role: userRole, 
-      hotelId,
-      socketId: socket.id 
-    });
+    // Reduced logging to prevent spam
+    // logger.info('New WebSocket connection', {
+    //   userId,
+    //   role: userRole,
+    //   hotelId,
+    //   socketId: socket.id
+    // });
 
     // Store connection
     this.connections.set(userId, socket);
@@ -208,12 +210,13 @@ class WebSocketService {
   handleDisconnection(socket, reason) {
     const { userId, hotelId } = socket;
     
-    logger.info('WebSocket disconnection', { 
-      userId, 
-      hotelId, 
-      reason,
-      socketId: socket.id 
-    });
+    // Reduced logging to prevent spam
+    // logger.info('WebSocket disconnection', {
+    //   userId,
+    //   hotelId,
+    //   reason,
+    //   socketId: socket.id
+    // });
 
     // Remove from connections
     this.connections.delete(userId);

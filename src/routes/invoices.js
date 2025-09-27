@@ -788,4 +788,512 @@ router.get('/overdue', authorize('staff', 'admin'), catchAsync(async (req, res) 
   });
 }));
 
+/**
+ * @swagger
+ * /invoices/supplementary/extra-person-charges:
+ *   post:
+ *     summary: Generate supplementary invoice for extra person charges
+ *     tags: [Invoices]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - bookingId
+ *               - extraPersonCharges
+ *             properties:
+ *               bookingId:
+ *                 type: string
+ *               extraPersonCharges:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     personId:
+ *                       type: string
+ *                     personName:
+ *                       type: string
+ *                     description:
+ *                       type: string
+ *                     baseCharge:
+ *                       type: number
+ *                     totalCharge:
+ *                       type: number
+ *                     addedAt:
+ *                       type: string
+ *                       format: date-time
+ *     responses:
+ *       201:
+ *         description: Supplementary invoice created successfully
+ */
+router.post('/supplementary/extra-person-charges', authorize('staff', 'admin'), catchAsync(async (req, res) => {
+  const { bookingId, extraPersonCharges } = req.body;
+
+  if (!bookingId || !extraPersonCharges || extraPersonCharges.length === 0) {
+    throw new ApplicationError('Booking ID and extra person charges are required', 400);
+  }
+
+  // Verify booking exists and check permissions
+  const booking = await Booking.findById(bookingId).populate('hotelId');
+  if (!booking) {
+    throw new ApplicationError('Booking not found', 404);
+  }
+
+  // Check hotel access
+  if (req.user.role === 'staff' && booking.hotelId._id.toString() !== req.user.hotelId.toString()) {
+    throw new ApplicationError('You can only create invoices for your hotel', 403);
+  }
+
+  // Generate supplementary invoice
+  const invoice = await Invoice.generateSupplementaryInvoice(
+    bookingId,
+    extraPersonCharges,
+    req.user._id
+  );
+
+  await invoice.populate([
+    { path: 'guestId', select: 'name email phone' },
+    { path: 'bookingId', select: 'bookingNumber checkIn checkOut' },
+    { path: 'hotelId', select: 'name' }
+  ]);
+
+  res.status(201).json({
+    status: 'success',
+    message: 'Supplementary invoice created successfully',
+    data: { invoice }
+  });
+}));
+
+/**
+ * @swagger
+ * /invoices/supplementary/settlement:
+ *   post:
+ *     summary: Generate invoice for settlement adjustments
+ *     tags: [Invoices]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - settlementId
+ *               - adjustments
+ *             properties:
+ *               settlementId:
+ *                 type: string
+ *               adjustments:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     description:
+ *                       type: string
+ *                     amount:
+ *                       type: number
+ *                     type:
+ *                       type: string
+ *                     appliedAt:
+ *                       type: string
+ *                       format: date-time
+ *     responses:
+ *       201:
+ *         description: Settlement invoice created successfully
+ */
+router.post('/supplementary/settlement', authorize('staff', 'admin'), catchAsync(async (req, res) => {
+  const { settlementId, adjustments } = req.body;
+
+  if (!settlementId || !adjustments || adjustments.length === 0) {
+    throw new ApplicationError('Settlement ID and adjustments are required', 400);
+  }
+
+  // Import Settlement model
+  const Settlement = (await import('../models/Settlement.js')).default;
+
+  // Verify settlement exists
+  const settlement = await Settlement.findById(settlementId)
+    .populate({
+      path: 'bookingId',
+      populate: { path: 'hotelId' }
+    });
+
+  if (!settlement) {
+    throw new ApplicationError('Settlement not found', 404);
+  }
+
+  // Check hotel access
+  if (req.user.role === 'staff' && settlement.bookingId.hotelId._id.toString() !== req.user.hotelId.toString()) {
+    throw new ApplicationError('You can only create invoices for your hotel', 403);
+  }
+
+  // Generate settlement invoice
+  const invoice = await Invoice.generateSettlementInvoice(
+    settlementId,
+    adjustments,
+    req.user._id
+  );
+
+  await invoice.populate([
+    { path: 'guestId', select: 'name email phone' },
+    { path: 'bookingId', select: 'bookingNumber checkIn checkOut' },
+    { path: 'hotelId', select: 'name' }
+  ]);
+
+  res.status(201).json({
+    status: 'success',
+    message: 'Settlement invoice created successfully',
+    data: { invoice }
+  });
+}));
+
+/**
+ * @swagger
+ * /invoices/{id}/add-extra-charges:
+ *   put:
+ *     summary: Add extra person charges to existing invoice
+ *     tags: [Invoices]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - extraPersonCharges
+ *             properties:
+ *               extraPersonCharges:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     personId:
+ *                       type: string
+ *                     personName:
+ *                       type: string
+ *                     description:
+ *                       type: string
+ *                     baseCharge:
+ *                       type: number
+ *                     totalCharge:
+ *                       type: number
+ *                     addedAt:
+ *                       type: string
+ *                       format: date-time
+ *     responses:
+ *       200:
+ *         description: Extra charges added to invoice successfully
+ */
+router.put('/:id/add-extra-charges', authorize('staff', 'admin'), catchAsync(async (req, res) => {
+  const { extraPersonCharges } = req.body;
+
+  if (!extraPersonCharges || extraPersonCharges.length === 0) {
+    throw new ApplicationError('Extra person charges are required', 400);
+  }
+
+  const invoice = await Invoice.findById(req.params.id);
+  if (!invoice) {
+    throw new ApplicationError('Invoice not found', 404);
+  }
+
+  // Check permissions
+  if (req.user.role === 'staff' && invoice.hotelId.toString() !== req.user.hotelId.toString()) {
+    throw new ApplicationError('You can only modify invoices for your hotel', 403);
+  }
+
+  // Don't allow modifications to paid invoices
+  if (invoice.status === 'paid') {
+    throw new ApplicationError('Cannot modify paid invoices', 400);
+  }
+
+  // Add extra person charges
+  invoice.addExtraPersonCharges(extraPersonCharges);
+  await invoice.save();
+
+  await invoice.populate([
+    { path: 'guestId', select: 'name email phone' },
+    { path: 'bookingId', select: 'bookingNumber checkIn checkOut' },
+    { path: 'hotelId', select: 'name' }
+  ]);
+
+  res.json({
+    status: 'success',
+    message: 'Extra charges added to invoice successfully',
+    data: { invoice }
+  });
+}));
+
+/**
+ * @swagger
+ * /invoices/{id}/download:
+ *   get:
+ *     summary: Download invoice as PDF
+ *     tags: [Invoices]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Invoice ID
+ *     responses:
+ *       200:
+ *         description: PDF file download
+ *         content:
+ *           application/pdf:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       404:
+ *         description: Invoice not found
+ */
+router.get('/:id/download', authenticate, catchAsync(async (req, res) => {
+  const invoice = await Invoice.findById(req.params.id)
+    .populate('hotelId', 'name address phone email')
+    .populate('guestId', 'name email phone')
+    .populate('bookingId', 'bookingNumber checkIn checkOut totalAmount');
+
+  if (!invoice) {
+    throw new ApplicationError('Invoice not found', 404);
+  }
+
+  // Check access permissions
+  if (req.user.role === 'guest' && invoice.guestId._id.toString() !== req.user._id.toString()) {
+    throw new ApplicationError('You can only download your own invoices', 403);
+  } else if (req.user.role === 'staff' && invoice.hotelId._id.toString() !== req.user.hotelId.toString()) {
+    throw new ApplicationError('You can only download invoices for your hotel', 403);
+  }
+
+  // For now, generate a simple PDF-like text format
+  // In a real implementation, you would use a PDF library like puppeteer or jsPDF
+  const invoiceContent = generateInvoicePDF(invoice);
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="Invoice-${invoice._id}.pdf"`);
+  res.send(invoiceContent);
+}));
+
+/**
+ * @swagger
+ * /invoices/{id}/view:
+ *   get:
+ *     summary: View invoice in browser
+ *     tags: [Invoices]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Invoice ID
+ *       - in: query
+ *         name: token
+ *         schema:
+ *           type: string
+ *         description: Authentication token (alternative to bearer auth)
+ *     responses:
+ *       200:
+ *         description: HTML invoice view
+ *         content:
+ *           text/html:
+ *             schema:
+ *               type: string
+ *       404:
+ *         description: Invoice not found
+ */
+router.get('/:id/view', catchAsync(async (req, res) => {
+  // Handle token from query parameter (for new tab opening)
+  let user = req.user;
+  if (!user && req.query.token) {
+    try {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.verify(req.query.token, process.env.JWT_SECRET);
+      const User = require('../models/User');
+      user = await User.findById(decoded.id);
+    } catch (error) {
+      throw new ApplicationError('Invalid token', 401);
+    }
+  }
+
+  if (!user) {
+    throw new ApplicationError('Authentication required', 401);
+  }
+
+  const invoice = await Invoice.findById(req.params.id)
+    .populate('hotelId', 'name address phone email')
+    .populate('guestId', 'name email phone')
+    .populate('bookingId', 'bookingNumber checkIn checkOut totalAmount');
+
+  if (!invoice) {
+    throw new ApplicationError('Invoice not found', 404);
+  }
+
+  // Check access permissions
+  if (user.role === 'guest' && invoice.guestId._id.toString() !== user._id.toString()) {
+    throw new ApplicationError('You can only view your own invoices', 403);
+  } else if (user.role === 'staff' && invoice.hotelId._id.toString() !== user.hotelId.toString()) {
+    throw new ApplicationError('You can only view invoices for your hotel', 403);
+  }
+
+  // Generate HTML invoice view
+  const invoiceHTML = generateInvoiceHTML(invoice);
+
+  res.setHeader('Content-Type', 'text/html');
+  res.send(invoiceHTML);
+}));
+
+// Helper function to generate PDF content (simplified for demo)
+function generateInvoicePDF(invoice) {
+  return Buffer.from(`
+INVOICE
+
+Hotel: ${invoice.hotelId.name}
+Invoice ID: ${invoice._id}
+Date: ${invoice.issueDate}
+Due Date: ${invoice.dueDate}
+
+Bill To:
+${invoice.guestId.name}
+${invoice.guestId.email}
+
+Booking: ${invoice.bookingId?.bookingNumber || 'N/A'}
+Check-in: ${invoice.bookingId?.checkIn ? new Date(invoice.bookingId.checkIn).toLocaleDateString() : 'N/A'}
+Check-out: ${invoice.bookingId?.checkOut ? new Date(invoice.bookingId.checkOut).toLocaleDateString() : 'N/A'}
+Original Booking Amount: ₹${invoice.bookingId?.totalAmount?.toLocaleString() || 'N/A'}
+
+Items:
+${invoice.items.map(item => `${item.description}: ₹${item.totalPrice}`).join('\n')}
+
+Subtotal: ₹${invoice.subtotal}
+Tax: ₹${invoice.taxAmount}
+Total: ₹${invoice.totalAmount}
+
+Status: ${invoice.status}
+  `.trim());
+}
+
+// Helper function to generate HTML invoice view
+function generateInvoiceHTML(invoice) {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Invoice ${invoice._id}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .invoice-info { display: flex; justify-content: space-between; margin-bottom: 30px; }
+        .section { margin-bottom: 20px; }
+        .items-table { width: 100%; border-collapse: collapse; }
+        .items-table th, .items-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        .items-table th { background-color: #f2f2f2; }
+        .total-section { text-align: right; margin-top: 20px; }
+        .total-row { display: flex; justify-content: space-between; margin: 5px 0; }
+        .total-amount { font-weight: bold; font-size: 1.2em; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>INVOICE</h1>
+        <h2>${invoice.hotelId.name}</h2>
+    </div>
+
+    <div class="invoice-info">
+        <div>
+            <strong>Invoice ID:</strong> ${invoice._id}<br>
+            <strong>Issue Date:</strong> ${new Date(invoice.issueDate).toLocaleDateString()}<br>
+            <strong>Due Date:</strong> ${new Date(invoice.dueDate).toLocaleDateString()}<br>
+            <strong>Status:</strong> <span style="text-transform: capitalize;">${invoice.status}</span>
+        </div>
+        <div>
+            <strong>Bill To:</strong><br>
+            ${invoice.guestId.name}<br>
+            ${invoice.guestId.email}<br>
+            ${invoice.guestId.phone || ''}
+        </div>
+    </div>
+
+    ${invoice.bookingId ? `
+    <div class="section">
+        <strong>Booking Details:</strong><br>
+        Booking Number: ${invoice.bookingId.bookingNumber}<br>
+        Check-in: ${new Date(invoice.bookingId.checkIn).toLocaleDateString()}<br>
+        Check-out: ${new Date(invoice.bookingId.checkOut).toLocaleDateString()}<br>
+        <strong>Original Booking Amount:</strong> ₹${invoice.bookingId.totalAmount?.toLocaleString() || 'N/A'}
+    </div>
+    ` : ''}
+
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th>Description</th>
+                <th>Quantity</th>
+                <th>Unit Price</th>
+                <th>Total</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${invoice.items.map(item => `
+                <tr>
+                    <td>${item.description}</td>
+                    <td>${item.quantity}</td>
+                    <td>₹${item.unitPrice.toLocaleString()}</td>
+                    <td>₹${item.totalPrice.toLocaleString()}</td>
+                </tr>
+            `).join('')}
+        </tbody>
+    </table>
+
+    <div class="total-section">
+        <div class="total-row">
+            <span>Subtotal (Extra Person Charges):</span>
+            <span>₹${invoice.subtotal.toLocaleString()}</span>
+        </div>
+        <div class="total-row">
+            <span>Tax (18% GST):</span>
+            <span>₹${invoice.taxAmount.toLocaleString()}</span>
+        </div>
+        <div class="total-row total-amount">
+            <span>Total Extra Charges:</span>
+            <span>₹${invoice.totalAmount.toLocaleString()}</span>
+        </div>
+        ${invoice.bookingId?.totalAmount ? `
+        <div style="margin-top: 15px; padding-top: 15px; border-top: 2px solid #333;">
+            <div class="total-row">
+                <span>Original Booking Amount:</span>
+                <span>₹${invoice.bookingId.totalAmount.toLocaleString()}</span>
+            </div>
+            <div class="total-row total-amount" style="font-size: 1.3em; background-color: #f0f0f0; padding: 10px; margin-top: 5px;">
+                <span><strong>Grand Total (Booking + Extra Charges):</strong></span>
+                <span><strong>₹${(invoice.bookingId.totalAmount + invoice.totalAmount).toLocaleString()}</strong></span>
+            </div>
+        </div>
+        ` : ''}
+    </div>
+
+    <div style="margin-top: 40px; text-align: center; color: #666;">
+        <p>Thank you for your business!</p>
+    </div>
+</body>
+</html>
+  `;
+}
+
 export default router;

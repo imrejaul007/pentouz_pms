@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import NotificationAutomationService from '../services/notificationAutomationService.js';
 
 /**
  * @swagger
@@ -383,10 +384,11 @@ roomSchema.statics.getRoomsWithRealTimeStatus = async function(hotelId, options 
   
   if (!rooms.length) return { rooms: [], total: 0 };
   
-  // Get current date
+  // Get current date in UTC to match booking dates
   const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0); // Start of today in UTC
+  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000); // Start of tomorrow in UTC
   
   // Find all current bookings that affect these rooms
   const currentBookings = await Booking.find({
@@ -426,8 +428,12 @@ roomSchema.statics.getRoomsWithRealTimeStatus = async function(hotelId, options 
       if (booking.status === 'checked_in') {
         computedStatus = 'occupied';
       } else if (booking.status === 'confirmed') {
-        if (checkIn <= today) {
-          computedStatus = 'occupied'; // Should be checked in
+        // Compare dates at UTC level to avoid timezone issues
+        const checkInUTC = new Date(checkIn.getTime());
+        checkInUTC.setUTCHours(0, 0, 0, 0);
+
+        if (checkInUTC.getTime() <= today.getTime()) {
+          computedStatus = 'occupied'; // Should be checked in (today or past)
         } else {
           computedStatus = 'reserved'; // Reserved for future
         }
@@ -443,12 +449,51 @@ roomSchema.statics.getRoomsWithRealTimeStatus = async function(hotelId, options 
     });
   });
   
-  // Add computed status to each room
+  // Get maintenance and housekeeping tasks to determine computed status
+  const MaintenanceTask = mongoose.model('MaintenanceTask');
+  const Housekeeping = mongoose.model('Housekeeping');
+
+  // Get all pending maintenance tasks for these rooms
+  const maintenanceTasks = await MaintenanceTask.find({
+    roomId: { $in: rooms.map(r => r._id) },
+    status: { $in: ['pending', 'in_progress', 'assigned'] }
+  }).select('roomId status');
+
+  // Get all pending housekeeping/cleaning tasks for these rooms
+  const housekeepingTasks = await Housekeeping.find({
+    roomId: { $in: rooms.map(r => r._id) },
+    status: { $in: ['pending', 'in_progress'] }
+  }).select('roomId status');
+
+  // Create maps for quick lookup
+  const maintenanceMap = new Map();
+  maintenanceTasks.forEach(task => {
+    maintenanceMap.set(task.roomId.toString(), true);
+  });
+
+  const housekeepingMap = new Map();
+  housekeepingTasks.forEach(task => {
+    housekeepingMap.set(task.roomId.toString(), true);
+  });
+
+  // Add computed status to each room with task-based overrides
   const roomsWithStatus = rooms.map(room => {
     const roomObj = room.toObject();
-    const occupancy = roomOccupancyMap.get(room._id.toString());
-    
-    if (occupancy) {
+    const roomId = room._id.toString();
+    const occupancy = roomOccupancyMap.get(roomId);
+
+    // Determine computed status based on priority:
+    // 1. Maintenance tasks (highest priority)
+    // 2. Housekeeping/cleaning tasks
+    // 3. Booking status (occupied/reserved)
+    // 4. Base room status (out_of_order)
+    // 5. Default to vacant
+
+    if (maintenanceMap.has(roomId)) {
+      roomObj.computedStatus = 'maintenance';
+    } else if (housekeepingMap.has(roomId)) {
+      roomObj.computedStatus = 'dirty';
+    } else if (occupancy) {
       roomObj.computedStatus = occupancy.status;
       roomObj.currentBooking = {
         bookingId: occupancy.bookingId,
@@ -456,11 +501,12 @@ roomSchema.statics.getRoomsWithRealTimeStatus = async function(hotelId, options 
         checkOut: occupancy.checkOut,
         status: occupancy.bookingStatus
       };
+    } else if (room.status === 'out_of_order') {
+      roomObj.computedStatus = 'out_of_order';
     } else {
-      // Check if room has any other status (maintenance, dirty, etc.)
-      roomObj.computedStatus = room.status === 'vacant' ? 'vacant' : room.status;
+      roomObj.computedStatus = 'vacant';
     }
-    
+
     return roomObj;
   });
   
@@ -477,5 +523,133 @@ roomSchema.statics.getRoomsWithRealTimeStatus = async function(hotelId, options 
     }
   };
 };
+
+// NOTIFICATION AUTOMATION HOOKS
+roomSchema.post('save', async function(doc) {
+  try {
+    // Only trigger notifications for status changes
+    if (doc.isModified('status')) {
+      const statusNotifications = {
+        'out_of_order': {
+          type: 'room_out_of_order',
+          priority: 'urgent',
+          reason: doc.maintenanceNotes || 'Maintenance required'
+        },
+        'dirty': {
+          type: 'room_checkout_dirty',
+          priority: 'medium'
+        },
+        'vacant': {
+          type: 'room_ready',
+          priority: 'medium'
+        },
+        'maintenance': {
+          type: 'room_needs_cleaning',
+          priority: 'medium'
+        }
+      };
+
+      const notification = statusNotifications[doc.status];
+      if (notification) {
+        let notificationData = {
+          roomNumber: doc.roomNumber,
+          roomId: doc._id,
+          status: doc.status,
+          floor: doc.floor,
+          type: doc.type,
+          reason: notification.reason || 'Status change'
+        };
+
+        // Phase 6: Add revenue impact data for out-of-order rooms
+        if (doc.status === 'out_of_order') {
+          try {
+            const RoomType = mongoose.model('RoomType');
+            const roomType = await RoomType.findById(doc.roomTypeId).select('basePrice name');
+
+            const dailyRate = roomType?.basePrice || doc.currentRate || 100;
+            const outOfOrderSince = doc.outOfOrderSince || new Date();
+            const daysOutOfOrder = Math.floor((new Date() - outOfOrderSince) / (1000 * 60 * 60 * 24));
+
+            // Enhanced notification data with revenue impact
+            notificationData = {
+              ...notificationData,
+              dailyRate,
+              estimatedDailyLoss: dailyRate,
+              daysOutOfOrder: Math.max(daysOutOfOrder, 1),
+              totalRevenueLoss: dailyRate * Math.max(daysOutOfOrder, 1),
+              roomType: roomType?.name || 'Standard',
+              outOfOrderSince,
+              revenueImpact: true
+            };
+
+            // Also trigger specific revenue impact alert for high-value rooms
+            if (dailyRate > 200) {
+              await NotificationAutomationService.triggerNotification(
+                'revenue_impact_alert',
+                {
+                  roomNumber: doc.roomNumber,
+                  roomId: doc._id,
+                  outOfOrderRooms: 1,
+                  dailyRevenueLoss: dailyRate,
+                  roomDetails: [{
+                    roomNumber: doc.roomNumber,
+                    roomType: roomType?.name || 'Standard',
+                    dailyRate,
+                    daysOutOfOrder: Math.max(daysOutOfOrder, 1)
+                  }],
+                  totalRooms: await mongoose.model('Room').countDocuments({ hotelId: doc.hotelId }),
+                  highValueRoom: true,
+                  estimatedWeeklyLoss: dailyRate * 7,
+                  priority: 'high-value-room-impact'
+                },
+                'auto',
+                'high',
+                doc.hotelId
+              );
+            }
+
+          } catch (error) {
+            console.error('Error calculating revenue impact:', error);
+          }
+        }
+
+        await NotificationAutomationService.triggerNotification(
+          notification.type,
+          notificationData,
+          'auto',
+          notification.priority,
+          doc.hotelId
+        );
+      }
+
+      // Special notification for room back in service
+      if (this.original && this.original.status === 'out_of_order' && doc.status === 'vacant') {
+        await NotificationAutomationService.triggerNotification(
+          'room_back_in_service',
+          {
+            roomNumber: doc.roomNumber,
+            roomId: doc._id,
+            previousStatus: 'out_of_order',
+            newStatus: 'vacant'
+          },
+          'auto',
+          'high',
+          doc.hotelId
+        );
+      }
+    }
+
+  } catch (error) {
+    console.error('Error in Room notification hook:', error);
+  }
+});
+
+// Store original values before save for comparison
+roomSchema.pre('save', function(next) {
+  if (!this.isNew) {
+    this.original = this.toObject();
+  }
+  next();
+});
 
 export default mongoose.model('Room', roomSchema);

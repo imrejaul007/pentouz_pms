@@ -74,10 +74,13 @@ router.get('/hotel', authorize('admin', 'staff', 'manager'), catchAsync(async (r
  */
 router.get('/real-time', authorize('admin'), catchAsync(async (req, res) => {
   const { hotelId } = req.query;
+  const now = new Date();
+  // Use UTC dates to match booking dates (which are stored in UTC)
   const today = new Date();
-  const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-  const startOfYear = new Date(today.getFullYear(), 0, 1);
+  today.setUTCHours(0, 0, 0, 0); // Start of today in UTC
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfYear = new Date(now.getFullYear(), 0, 1);
 
   // Build match query for hotel filtering
   const buildMatchQuery = (additionalFilters = {}) => {
@@ -169,7 +172,7 @@ router.get('/real-time', authorize('admin'), catchAsync(async (req, res) => {
                   $and: [
                     { $in: ['$$roomId', '$rooms.roomId'] },
                     { $lte: ['$checkIn', today] },
-                    { $gt: ['$checkOut', today] },
+                    { $gte: ['$checkOut', today] },
                     { $in: ['$status', ['confirmed', 'checked_in']] }
                   ]
                 }
@@ -829,9 +832,10 @@ router.get('/occupancy', authorize('admin', 'staff'), catchAsync(async (req, res
     console.log('Hotel name:', hotelExists.name);
   }
 
+  // Use UTC dates to match booking dates (which are stored in UTC)
   const today = new Date();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(today.getDate() + 1);
+  today.setUTCHours(0, 0, 0, 0); // Start of today in UTC
+  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000); // Start of tomorrow in UTC
 
   // Debug: Check if there are any current bookings
   const currentBookings = await Booking.find({
@@ -1191,6 +1195,19 @@ router.get('/occupancy', authorize('admin', 'staff'), catchAsync(async (req, res
   const maintenanceCount = roomsWithStatus.filter(room => room.status === 'maintenance').length;
   const outOfOrderCount = roomsWithStatus.filter(room => room.status === 'out_of_order').length;
 
+  // Debug occupancy calculation
+  console.log('🔍 OCCUPANCY CALCULATION DEBUG:');
+  console.log('- totalRooms:', totalRooms);
+  console.log('- occupiedCount:', occupiedCount);
+  console.log('- availableCount:', availableCount);
+  console.log('- cleaningCount:', cleaningCount);
+  console.log('- maintenanceCount:', maintenanceCount);
+  console.log('- Raw calculation:', occupiedCount / totalRooms);
+  console.log('- Percentage calculation:', (occupiedCount / totalRooms) * 100);
+  console.log('- Rounded result:', totalRooms > 0 ? Math.round((occupiedCount / totalRooms) * 100) : 0);
+
+  const calculatedOccupancyRate = totalRooms > 0 ? Math.round((occupiedCount / totalRooms) * 100) : 0;
+
   const overallMetrics = {
     totalRooms,
     occupiedRooms: occupiedCount,
@@ -1198,9 +1215,11 @@ router.get('/occupancy', authorize('admin', 'staff'), catchAsync(async (req, res
     cleaningRooms: cleaningCount,
     maintenanceRooms: maintenanceCount,
     outOfOrderRooms: outOfOrderCount,
-    occupancyRate: totalRooms > 0 ? Math.round((occupiedCount / totalRooms) * 100) : 0,
+    occupancyRate: calculatedOccupancyRate,
     availabilityRate: totalRooms > 0 ? Math.round((availableCount / totalRooms) * 100) : 0
   };
+
+  console.log('- Final overallMetrics.occupancyRate:', overallMetrics.occupancyRate);
 
   // Get room type distribution
   const roomTypeDistribution = roomsWithStatus.reduce((acc, room) => {

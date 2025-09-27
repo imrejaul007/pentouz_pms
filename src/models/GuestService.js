@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import NotificationAutomationService from '../services/notificationAutomationService.js';
 
 /**
  * @swagger
@@ -593,6 +594,117 @@ guestServiceSchema.virtual('billingStatus').get(function() {
   if (billedItems === billingItems.length) return 'fully_billed';
   if (billedItems > 0) return 'partially_billed';
   return 'pending_billing';
+});
+
+// NOTIFICATION AUTOMATION HOOKS
+guestServiceSchema.post('save', async function(doc) {
+  try {
+    // Get room number from booking
+    let roomNumber = 'Unknown';
+    try {
+      const booking = await mongoose.model('Booking').findById(doc.bookingId).populate('rooms.roomId');
+      if (booking && booking.rooms && booking.rooms[0] && booking.rooms[0].roomId) {
+        roomNumber = booking.rooms[0].roomId.roomNumber || 'Unknown';
+      }
+    } catch (error) {
+      console.log('Could not fetch room number for guest service notification');
+    }
+
+    // Check if this is a VIP guest
+    const user = await mongoose.model('User').findById(doc.userId);
+    const isVipGuest = user && (user.loyaltyTier === 'platinum' || user.loyaltyTier === 'diamond');
+
+    // 1. New guest service request created
+    if (this.isNew) {
+      let notificationType = 'guest_service_created';
+      let priority = 'medium';
+
+      // Check for urgent or VIP requests
+      if (doc.priority === 'urgent' || doc.priority === 'now') {
+        notificationType = 'guest_service_urgent';
+        priority = 'urgent';
+      } else if (isVipGuest) {
+        notificationType = 'guest_service_vip';
+        priority = 'high';
+      }
+
+      await NotificationAutomationService.triggerNotification(
+        notificationType,
+        {
+          roomNumber,
+          serviceType: doc.serviceType,
+          serviceVariation: doc.serviceVariation,
+          description: doc.description || doc.title,
+          priority: doc.priority,
+          requestId: doc._id,
+          userId: doc.userId,
+          isVip: isVipGuest
+        },
+        'auto',
+        priority,
+        doc.hotelId
+      );
+    }
+
+    // 2. Service assigned to staff
+    if (doc.isModified('assignedTo') && doc.assignedTo) {
+      await NotificationAutomationService.triggerNotification(
+        'guest_service_assigned',
+        {
+          roomNumber,
+          serviceType: doc.serviceType,
+          serviceVariation: doc.serviceVariation,
+          description: doc.description || doc.title,
+          requestId: doc._id,
+          assignedTo: doc.assignedTo,
+          priority: doc.priority,
+          isVip: isVipGuest
+        },
+        [doc.assignedTo],
+        isVipGuest ? 'high' : 'medium',
+        doc.hotelId
+      );
+    }
+
+    // 3. Service started (status changed to in_progress)
+    if (doc.isModified('status') && doc.status === 'in_progress') {
+      await NotificationAutomationService.triggerNotification(
+        'guest_service_started',
+        {
+          roomNumber,
+          serviceType: doc.serviceType,
+          serviceVariation: doc.serviceVariation,
+          requestId: doc._id,
+          assignedTo: doc.assignedTo
+        },
+        [doc.userId, 'auto'], // Notify guest and admin
+        'low',
+        doc.hotelId
+      );
+    }
+
+    // 4. Service completed
+    if (doc.isModified('status') && doc.status === 'completed') {
+      await NotificationAutomationService.triggerNotification(
+        'guest_service_completed',
+        {
+          roomNumber,
+          serviceType: doc.serviceType,
+          serviceVariation: doc.serviceVariation,
+          requestId: doc._id,
+          completedTime: doc.completedTime,
+          assignedTo: doc.assignedTo,
+          actualCost: doc.actualCost
+        },
+        [doc.userId, 'auto'], // Notify guest and admin
+        'medium',
+        doc.hotelId
+      );
+    }
+
+  } catch (error) {
+    console.error('Error in GuestService notification hook:', error);
+  }
 });
 
 export default mongoose.model('GuestService', guestServiceSchema);

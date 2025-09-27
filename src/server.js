@@ -26,6 +26,7 @@ import logger from './utils/logger.js';
 import websocketService from './services/websocketService.js';
 import inventoryScheduler from './services/inventoryScheduler.js';
 import reorderJob from './jobs/reorderJob.js';
+import NotificationScheduler from './services/notificationScheduler.js';
 // import pricingScheduler from './schedulers/pricingScheduler.js'; // Temporarily disabled - requires tensorflow
 import {
     applyEventMiddleware
@@ -70,17 +71,27 @@ import hotelServicesRoutes from './routes/hotelServices.js'; // Temporarily disa
 import adminHotelServicesRoutes from './routes/adminHotelServices.js';
 import staffServicesRoutes from './routes/staffServices.js';
 import notificationRoutes from './routes/notifications.js'; // Temporarily disabled
+import settlementNotificationRoutes from './routes/settlementNotifications.js';
+import settlementNotificationService from './services/settlementNotificationService.js';
+import userPreferencesRoutes from './routes/userPreferences.js';
+import hotelSettingsRoutes from './routes/hotelSettings.js';
+import settingsRoutes from './routes/settings.js';
+import integrationsRoutes from './routes/integrations.js';
+import uploadRoutes from './routes/upload.js';
 import digitalKeyRoutes from './routes/digitalKeys.js'; // Temporarily disabled
 import staffAlertsRoutes from './routes/staffAlerts.js';
 import staffMeetUpRoutes from './routes/staffMeetUp.js';
 import meetUpRequestRoutes from './routes/meetUpRequests.js'; // Temporarily disabled
 import meetUpResourceRoutes from './routes/meetUpResources.js';
+import travelAgentRoutes from './routes/travelAgents.js';
+import adminTravelDashboardRoutes from './routes/adminTravelDashboard.js';
 import dashboardUpdatesRoutes from './routes/dashboardUpdates.js'; // Temporarily disabled
 import corporateRoutes from './routes/corporate.js'; // Temporarily disabled
 import roomInventoryRoutes from './routes/roomInventory.js'; // Temporarily disabled
 import photoUploadRoutes from './routes/photoUpload.js'; // Temporarily disabled
+import documentUploadRoutes from './routes/documentUpload.js';
 import staffTaskRoutes from './routes/staffTasks.js'; // Temporarily disabled
-import checkoutInventoryRoutes from './routes/checkoutInventory.js'; // Temporarily disabled
+import checkoutInventoryRoutes from './routes/checkoutInventory.js'; // ENABLED - Route conflict fixed
 import dailyRoutineCheckRoutes from './routes/dailyRoutineCheck.js'; // Temporarily disabled
 import testCheckoutsRoutes from './routes/testCheckouts.js'; // Temporarily disabled
 import attractionsRoutes from './routes/attractions.js'; // Temporarily disabled
@@ -133,6 +144,7 @@ import blacklistRoutes from './routes/blacklist.js';
 import vipRoutes from './routes/vip.js';
 import customFieldRoutes from './routes/customFields.js';
 import userManagementRoutes from './routes/userManagement.js';
+import usersRoutes from './routes/users.js';
 import loginActivityRoutes from './routes/loginActivity.js';
 import userAnalyticsRoutes from './routes/userAnalytics.js';
 import seasonalPricingRoutes from './routes/seasonalPricing.js';
@@ -142,6 +154,7 @@ import bookingFormRoutes from './routes/bookingForm.js';
 import allotmentRoutes from './routes/allotment.js';
 import centralizedRatesRoutes from './routes/centralizedRates.js';
 import propertyGroupsRoutes from './routes/propertyGroups.js';
+import propertyRoomsRoutes from './routes/propertyRooms.js';
 import departmentRoutes from './routes/departments.js';
 import reasonRoutes from './routes/reasons.js';
 import paymentMethodRoutes from './routes/paymentMethods.js';
@@ -162,6 +175,7 @@ import inventoryAutomationRoutes from './routes/inventoryAutomation.js';
 import housekeepingAutomationRoutes from './routes/housekeepingAutomation.js';
 import bookingConversationRoutes from './routes/bookingConversations.js';
 import waitingListRoutes from './routes/waitingList.js';
+import waitlistRoutes from './routes/waitlist.js';
 import workflowRoutes from './routes/workflow.js';
 import departmentBudgetRoutes from './routes/departmentBudget.js';
 import vendorRoutes from './routes/vendors.js';
@@ -177,6 +191,9 @@ import emailCampaignRoutes from './routes/emailCampaigns.js';
 import crmRoutes from './routes/crm.js';
 import segmentationRoutes from './routes/segmentation.js';
 import personalizationRoutes from './routes/personalization.js';
+import extraPersonPricingRoutes from './routes/extraPersonPricing.js';
+import settlementsRoutes from './routes/settlements.js';
+import posSettlementIntegrationRoutes from './routes/posSettlementIntegration.js';
 
 const app = express();
 
@@ -434,6 +451,9 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/rooms', roomRoutes);
 app.use('/api/v1/bookings/enhanced', enhancedBookingRoutes);
 app.use('/api/v1/bookings', bookingRoutes);
+app.use('/api/v1/extra-person-pricing', extraPersonPricingRoutes);
+app.use('/api/v1/settlements', settlementsRoutes);
+app.use('/api/v1/pos-settlements', posSettlementIntegrationRoutes);
 app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/housekeeping', housekeepingRoutes);
 app.use('/api/v1/inventory', inventoryRoutes);
@@ -470,14 +490,26 @@ app.use('/api/v1/hotel-services', hotelServicesRoutes);
 app.use('/api/v1/admin/hotel-services', adminHotelServicesRoutes);
 app.use('/api/v1/staff/services', staffServicesRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
+app.use('/api/v1/settlement-notifications', settlementNotificationRoutes);
+app.use('/api/v1/user-preferences', userPreferencesRoutes);
+app.use('/api/v1/hotel-settings', hotelSettingsRoutes);
+// CRITICAL: Move checkout-inventory and other specific routes BEFORE settings catch-all routes
+app.use('/api/v1/checkout-inventory', checkoutInventoryRoutes);
+app.use('/api/v1/integrations', integrationsRoutes); // Integration settings routes
+app.use('/api/v1/upload', uploadRoutes); // Upload routes for avatars
 app.use('/api/v1/digital-keys', digitalKeyRoutes);
 app.use('/api/v1/meet-up-requests', meetUpRequestRoutes);
 app.use('/api/v1/meetup-resources', meetUpResourceRoutes);
+app.use('/api/v1/travel-agents', travelAgentRoutes);
+app.use('/api/v1/admin/travel-dashboard', adminTravelDashboardRoutes);
 app.use('/api/v1/dashboard-updates', dashboardUpdatesRoutes);
 app.use('/api/v1/room-inventory', roomInventoryRoutes);
 app.use('/api/v1/photos', photoUploadRoutes);
+app.use('/api/v1/documents', documentUploadRoutes);
 app.use('/api/v1/staff-tasks', staffTaskRoutes);
-app.use('/api/v1/checkout-inventory', checkoutInventoryRoutes);
+
+// IMPORTANT: Settings routes MUST come AFTER specific routes to avoid conflicts
+app.use('/api/v1/settings', settingsRoutes); // Settings routes with various endpoints
 app.use('/api/v1/daily-routine-check', dailyRoutineCheckRoutes);
 app.use('/api/v1/test', testCheckoutsRoutes);
 app.use('/api/v1/attractions', attractionsRoutes);
@@ -515,6 +547,7 @@ app.use('/api/v1/assignment-rules', assignmentRulesRoutes);
 // Advanced Reservations route moved after basic routes for stability
 // app.use('/api/v1/advanced-reservations', advancedReservationsRoutes);
 app.use('/api/v1/waiting-list', waitingListRoutes);
+app.use('/api/v1/waitlist', waitlistRoutes);
 app.use('/api/v1/billing-sessions', billingSessionRoutes);
 app.use('/api/v1/pos/reports', posReportsRoutes);
 app.use('/api/v1/guest-lookup', guestLookupRoutes);
@@ -552,12 +585,14 @@ app.use('/api/v1/blacklist', blacklistRoutes);
 app.use('/api/v1/vip', vipRoutes);
 app.use('/api/v1/custom-fields', customFieldRoutes);
 app.use('/api/v1/user-management', userManagementRoutes);
+app.use('/api/v1/users', usersRoutes);
 app.use('/api/v1/login-activity', loginActivityRoutes);
 app.use('/api/v1/user-analytics', userAnalyticsRoutes);
 app.use('/api/v1/booking-forms', bookingFormRoutes);
 app.use('/api/v1/allotments', allotmentRoutes);
 app.use('/api/v1/centralized-rates', centralizedRatesRoutes);
 app.use('/api/v1/property-groups', propertyGroupsRoutes);
+app.use('/api/v1/property-rooms', propertyRoomsRoutes);
 app.use('/api/v1/departments', departmentRoutes);
 app.use('/api/v1/reasons', reasonRoutes);
 app.use('/api/v1/payment-methods', paymentMethodRoutes);
@@ -617,19 +652,29 @@ const server = app.listen(PORT, async () => {
     logger.info('✅ Server startup completed successfully');
 
     // Initialize services after server starts
-    /*  // TEMPORARILY DISABLED FOR TESTING
+    // RE-ENABLED FOR NOTIFICATION AUTOMATION
     try {
         logger.info('🔄 Starting post-server services initialization...');
 
-        // Initialize WebSocket server - TEMPORARILY COMMENTED
+        // Initialize WebSocket server for real-time notifications
         logger.info('🔄 Initializing WebSocket server...');
-        // websocketService.initialize(server);
-        logger.info('✅ WebSocket server initialized (SKIPPED)');
+        websocketService.initialize(server);
+        logger.info('✅ WebSocket server initialized');
 
         // Start inventory scheduler - TEMPORARILY COMMENTED
         logger.info('🔄 Starting inventory scheduler...');
         inventoryScheduler.start();
         logger.info('✅ Inventory scheduler started');
+
+        // Initialize notification scheduler for hotel management automation
+        logger.info('🔄 Initializing notification scheduler...');
+        NotificationScheduler.initializeScheduledJobs();
+        logger.info('✅ Notification scheduler initialized');
+
+        // Initialize settlement notification service
+        logger.info('🔄 Initializing settlement notification service...');
+        // Settlement notification service auto-starts with cron jobs
+        logger.info('✅ Settlement notification service initialized');
 
         // Start reorder job
         logger.info('🔄 Starting reorder job...');
@@ -702,7 +747,7 @@ const server = app.listen(PORT, async () => {
         logger.error('Failed to start services:', error);
         process.exit(1);
     }
-    */
+    // END OF POST-SERVER SERVICES INITIALIZATION
 });
 
 // Graceful shutdown - TEMPORARILY COMMENTED

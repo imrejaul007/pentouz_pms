@@ -30,7 +30,7 @@ import bcrypt from 'bcryptjs';
  *           description: User's phone number
  *         role:
  *           type: string
- *           enum: [guest, staff, admin, manager]
+ *           enum: [guest, staff, admin, manager, travel_agent]
  *           default: guest
  *           description: User role
  *         preferences:
@@ -126,7 +126,7 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['guest', 'staff', 'admin', 'manager'],
+    enum: ['guest', 'staff', 'admin', 'manager', 'travel_agent'],
     default: 'guest'
   },
   guestType: {
@@ -162,6 +162,97 @@ const userSchema = new mongoose.Schema({
     approverEmail: {
       type: String,
       lowercase: true
+    }
+  },
+  billingDetails: {
+    gstNumber: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      match: [/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/, 'Please enter a valid GST number']
+    },
+    companyName: {
+      type: String,
+      trim: true,
+      maxlength: [200, 'Company name cannot be more than 200 characters']
+    },
+    billingAddress: {
+      street: {
+        type: String,
+        trim: true
+      },
+      city: {
+        type: String,
+        trim: true
+      },
+      state: {
+        type: String,
+        trim: true
+      },
+      postalCode: {
+        type: String,
+        trim: true
+      },
+      country: {
+        type: String,
+        trim: true,
+        default: 'India'
+      }
+    },
+    panNumber: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      match: [/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/, 'Please enter a valid PAN number']
+    },
+    billingContactPerson: {
+      type: String,
+      trim: true
+    },
+    billingEmail: {
+      type: String,
+      lowercase: true,
+      match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid billing email']
+    },
+    billingPhone: {
+      type: String,
+      match: [/^\+?[\d\s-()]+$/, 'Please enter a valid billing phone number']
+    }
+  },
+  travelAgentDetails: {
+    travelAgentId: {
+      type: mongoose.Schema.ObjectId,
+      ref: 'TravelAgent'
+    },
+    agentCode: {
+      type: String,
+      trim: true,
+      uppercase: true
+    },
+    commissionRate: {
+      type: Number,
+      min: 0,
+      max: 100,
+      default: 10
+    },
+    bookingLimits: {
+      maxBookingsPerDay: {
+        type: Number,
+        default: 50
+      },
+      maxRoomsPerBooking: {
+        type: Number,
+        default: 10
+      }
+    },
+    specialRatesAccess: {
+      type: Boolean,
+      default: true
+    },
+    status: {
+      type: String,
+      enum: ['active', 'inactive', 'suspended'],
+      default: 'active'
     }
   },
   hotelId: {
@@ -286,6 +377,27 @@ const userSchema = new mongoose.Schema({
       default: Date.now
     }
   }],
+  // Additional fields for settings
+  avatar: {
+    type: String,
+    default: null
+  },
+  timezone: {
+    type: String,
+    default: 'Asia/Kolkata'
+  },
+  language: {
+    type: String,
+    default: 'en'
+  },
+  department: {
+    type: String,
+    default: null
+  },
+  employeeId: {
+    type: String,
+    default: null
+  },
   isActive: {
     type: Boolean,
     default: true
@@ -346,16 +458,55 @@ userSchema.methods.updateOfferPreferences = function(category, type) {
       }
     };
   }
-  
+
   // Add category if not already present
   if (category && !this.preferences.offers.favoriteCategories.includes(category)) {
     this.preferences.offers.favoriteCategories.push(category);
   }
-  
+
   // Add type if not already present
   if (type && !this.preferences.offers.favoriteTypes.includes(type)) {
     this.preferences.offers.favoriteTypes.push(type);
   }
+};
+
+// Update billing details
+userSchema.methods.updateBillingDetails = function(billingData) {
+  if (!this.billingDetails) {
+    this.billingDetails = {};
+  }
+
+  Object.assign(this.billingDetails, billingData);
+
+  // If GST number is provided, mark as corporate guest
+  if (billingData.gstNumber) {
+    this.guestType = 'corporate';
+  }
+};
+
+// Validate GST number format
+userSchema.methods.validateGSTNumber = function(gstNumber) {
+  const gstRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+  return gstRegex.test(gstNumber);
+};
+
+// Get formatted billing address
+userSchema.methods.getFormattedBillingAddress = function() {
+  if (!this.billingDetails || !this.billingDetails.billingAddress) {
+    return '';
+  }
+
+  const addr = this.billingDetails.billingAddress;
+  const parts = [addr.street, addr.city, addr.state, addr.postalCode, addr.country].filter(Boolean);
+  return parts.join(', ');
+};
+
+// Check if user has complete billing information
+userSchema.methods.hasCompleteBillingInfo = function() {
+  if (!this.billingDetails) return false;
+
+  const required = ['gstNumber', 'companyName'];
+  return required.every(field => this.billingDetails[field]);
 };
 
 // Remove password from JSON output

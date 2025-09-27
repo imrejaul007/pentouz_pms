@@ -636,13 +636,15 @@ router.get('/occupancy-breakdown', authenticate, authorize('admin', 'staff'), ca
     hotelId
   } = req.query;
 
+  // Use UTC dates to match booking dates (which are stored in UTC)
   const currentDate = new Date();
-  
+  currentDate.setUTCHours(0, 0, 0, 0); // Start of today in UTC
+
   // For current occupancy, we only care about bookings that are active TODAY
   const matchQuery = {
     status: { $in: ['confirmed', 'checked_in'] }, // Only active bookings
     checkIn: { $lte: currentDate }, // Check-in date has passed
-    checkOut: { $gt: currentDate }  // Check-out date is in the future
+    checkOut: { $gte: currentDate }  // Check-out date is today or in the future (guest stays until end of day)
   };
 
   if (req.user.role === 'staff' && req.user.hotelId) {
@@ -705,28 +707,38 @@ router.get('/occupancy-breakdown', authenticate, authorize('admin', 'staff'), ca
 
   // Track which specific rooms are occupied
   const occupiedRoomIds = new Set();
-  
+  const roomBookingMap = new Map(); // Track which booking each room belongs to
+
   bookings.forEach(booking => {
     if (booking.roomDetails && booking.roomDetails.length > 0) {
       booking.roomDetails.forEach(room => {
-        occupiedRoomIds.add(room._id.toString());
-        currentlyOccupiedRooms++;
-        
-        if (occupiedRoomsByType[room.type]) {
-          occupiedRoomsByType[room.type].occupied++;
+        const roomIdStr = room._id.toString();
+
+        // Only count each room once, even if it appears in multiple bookings
+        if (!occupiedRoomIds.has(roomIdStr)) {
+          occupiedRoomIds.add(roomIdStr);
+          currentlyOccupiedRooms++;
+
+          if (occupiedRoomsByType[room.type]) {
+            occupiedRoomsByType[room.type].occupied++;
+          }
+
+          // Store the booking info for this room
+          roomBookingMap.set(roomIdStr, {
+            roomNumber: room.roomNumber,
+            type: room.type,
+            guestName: booking.guestName || 'Guest',
+            status: booking.status,
+            checkIn: booking.checkIn,
+            checkOut: booking.checkOut
+          });
         }
-        
-        occupiedRoomsList.push({
-          roomNumber: room.roomNumber,
-          type: room.type,
-          guestName: booking.guestName || 'Guest',
-          status: booking.status,
-          checkIn: booking.checkIn,
-          checkOut: booking.checkOut
-        });
       });
     }
   });
+
+  // Convert the room booking map to the occupied rooms list (no duplicates)
+  occupiedRoomsList.push(...Array.from(roomBookingMap.values()));
   
   // Get available rooms
   rooms.forEach(room => {

@@ -82,7 +82,19 @@ const billingSessionSchema = new mongoose.Schema({
   updatedAt: {
     type: Date,
     default: Date.now
-  }
+  },
+  // Settlement integration fields
+  settlementId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Settlement'
+  },
+  settlementStatus: {
+    type: String,
+    enum: ['pending', 'integrated', 'settled'],
+    default: 'pending'
+  },
+  integratedAt: Date,
+  settledAt: Date
 }, {
   timestamps: true
 });
@@ -177,6 +189,120 @@ billingSessionSchema.methods.processPayment = function(paymentMethod) {
 billingSessionSchema.methods.voidSession = function() {
   this.status = 'void';
   return this;
+};
+
+// Settlement integration methods
+
+// Method to check if session is ready for settlement integration
+billingSessionSchema.methods.isReadyForSettlement = function() {
+  return this.status === 'room_charged' || this.status === 'paid';
+};
+
+// Method to mark session as integrated with settlement
+billingSessionSchema.methods.markAsIntegrated = function(settlementId) {
+  this.settlementId = settlementId;
+  this.settlementStatus = 'integrated';
+  this.integratedAt = new Date();
+  return this;
+};
+
+// Method to mark session as settled
+billingSessionSchema.methods.markAsSettled = function() {
+  this.settlementStatus = 'settled';
+  this.settledAt = new Date();
+  return this;
+};
+
+// Method to get settlement summary
+billingSessionSchema.methods.getSettlementSummary = function() {
+  return {
+    sessionId: this.sessionId,
+    guestName: this.guestName,
+    roomNumber: this.roomNumber,
+    bookingId: this.bookingId,
+    bookingNumber: this.bookingNumber,
+    totalAmount: this.grandTotal,
+    itemsCount: this.items.length,
+    status: this.status,
+    settlementStatus: this.settlementStatus,
+    settlementId: this.settlementId,
+    integratedAt: this.integratedAt,
+    settledAt: this.settledAt,
+    createdAt: this.createdAt,
+    paidAt: this.paidAt
+  };
+};
+
+// Method to get POS items formatted for settlement adjustments
+billingSessionSchema.methods.getPOSItemsForSettlement = function() {
+  return this.items.map(item => ({
+    name: item.name,
+    category: item.category,
+    outlet: item.outlet,
+    quantity: item.quantity,
+    unitPrice: item.price,
+    totalPrice: item.price * item.quantity,
+    tax: item.tax * item.quantity,
+    discount: item.discount || 0,
+    timestamp: item.timestamp
+  }));
+};
+
+// Static method to find sessions ready for settlement integration
+billingSessionSchema.statics.findReadyForSettlement = async function(hotelId, bookingId = null) {
+  const query = {
+    hotelId,
+    status: { $in: ['room_charged', 'paid'] },
+    settlementStatus: 'pending'
+  };
+
+  if (bookingId) {
+    query.bookingId = bookingId;
+  }
+
+  return await this.find(query)
+    .populate('bookingId', 'bookingNumber')
+    .sort({ createdAt: -1 });
+};
+
+// Static method to get settlement integration statistics
+billingSessionSchema.statics.getSettlementIntegrationStats = async function(hotelId, dateRange = {}) {
+  const matchStage = { hotelId };
+
+  if (dateRange.start || dateRange.end) {
+    matchStage.createdAt = {};
+    if (dateRange.start) matchStage.createdAt.$gte = new Date(dateRange.start);
+    if (dateRange.end) matchStage.createdAt.$lte = new Date(dateRange.end);
+  }
+
+  const pipeline = [
+    { $match: matchStage },
+    {
+      $group: {
+        _id: '$settlementStatus',
+        count: { $sum: 1 },
+        totalAmount: { $sum: '$grandTotal' },
+        avgAmount: { $avg: '$grandTotal' }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        byStatus: {
+          $push: {
+            status: '$_id',
+            count: '$count',
+            totalAmount: '$totalAmount',
+            avgAmount: '$avgAmount'
+          }
+        },
+        totalSessions: { $sum: '$count' },
+        totalValue: { $sum: '$totalAmount' }
+      }
+    }
+  ];
+
+  return await this.aggregate(pipeline);
 };
 
 export default mongoose.model('BillingSession', billingSessionSchema);

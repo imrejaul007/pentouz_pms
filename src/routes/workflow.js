@@ -16,4 +16,9 @@ router.get('/actions', optionalAuth, WorkflowController.getWorkflowActions);
 router.get('/analytics/floor/:floorId', optionalAuth, WorkflowController.getFloorAnalytics);
 router.get('/analytics/predictive', optionalAuth, WorkflowController.getPredictiveAnalytics);
 
+// Upgrade Processing routes
+router.get('/upgrades/suggestions', optionalAuth, WorkflowController.generateUpgradeSuggestions);
+router.post('/upgrades/process', optionalAuth, WorkflowController.processUpgrade);
+router.get('/upgrades/analytics', optionalAuth, WorkflowController.getUpgradeAnalytics);
+
 export default router;

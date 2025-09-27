@@ -44,7 +44,7 @@ import mongoose from 'mongoose';
  *           default: pending
  *         paymentStatus:
  *           type: string
- *           enum: [pending, paid, refunded, failed]
+ *           enum: [pending, paid, partially_paid, refunded, failed]
  *           default: pending
  *         totalAmount:
  *           type: number
@@ -181,7 +181,7 @@ const bookingSchema = new mongoose.Schema({
   paymentStatus: {
     type: String,
     enum: {
-      values: ['pending', 'paid', 'refunded', 'failed'],
+      values: ['pending', 'paid', 'partially_paid', 'refunded', 'failed'],
       message: 'Invalid payment status'
     },
     default: 'pending'
@@ -234,6 +234,129 @@ const bookingSchema = new mongoose.Schema({
     collectedBy: {
       type: mongoose.Schema.ObjectId,
       ref: 'User'
+    }
+  },
+  // Post-checkout settlement tracking
+  settlementTracking: {
+    status: {
+      type: String,
+      enum: ['not_required', 'pending', 'partial', 'completed', 'refund_pending', 'refunded'],
+      default: 'not_required'
+    },
+    finalAmount: {
+      type: Number,
+      min: 0,
+      description: 'Final amount including all charges and adjustments'
+    },
+    adjustments: [{
+      type: {
+        type: String,
+        enum: ['extra_person_charge', 'damage_charge', 'minibar_charge', 'service_charge', 'discount', 'refund', 'penalty', 'other'],
+        required: true
+      },
+      amount: {
+        type: Number,
+        required: true
+      },
+      description: {
+        type: String,
+        required: true
+      },
+      appliedAt: {
+        type: Date,
+        default: Date.now
+      },
+      appliedBy: {
+        userId: {
+          type: mongoose.Schema.ObjectId,
+          ref: 'User'
+        },
+        userName: String,
+        userRole: {
+          type: String,
+          enum: ['admin', 'staff']
+        }
+      },
+      invoiceGenerated: {
+        type: Boolean,
+        default: false
+      },
+      invoiceId: String
+    }],
+    outstandingBalance: {
+      type: Number,
+      default: 0,
+      description: 'Amount still owed by guest'
+    },
+    refundAmount: {
+      type: Number,
+      default: 0,
+      description: 'Amount to be refunded to guest'
+    },
+    settlementNotes: String,
+    lastUpdated: {
+      type: Date,
+      default: Date.now
+    },
+    settlementHistory: [{
+      action: {
+        type: String,
+        enum: ['balance_calculated', 'payment_received', 'refund_processed', 'adjustment_applied', 'settlement_completed'],
+        required: true
+      },
+      amount: Number,
+      description: String,
+      timestamp: {
+        type: Date,
+        default: Date.now
+      },
+      processedBy: {
+        userId: {
+          type: mongoose.Schema.ObjectId,
+          ref: 'User'
+        },
+        userName: String,
+        userRole: {
+          type: String,
+          enum: ['admin', 'staff']
+        }
+      },
+      paymentMethod: {
+        type: String,
+        enum: ['cash', 'card', 'upi', 'bank_transfer', 'refund_to_source']
+      },
+      reference: String,
+      metadata: mongoose.Schema.Types.Mixed
+    }],
+    remindersSent: [{
+      type: {
+        type: String,
+        enum: ['email', 'sms', 'phone_call'],
+        required: true
+      },
+      sentAt: {
+        type: Date,
+        default: Date.now
+      },
+      sentTo: String,
+      status: {
+        type: String,
+        enum: ['sent', 'delivered', 'failed'],
+        default: 'sent'
+      },
+      template: String,
+      response: String
+    }],
+    escalationLevel: {
+      type: Number,
+      min: 0,
+      max: 5,
+      default: 0,
+      description: 'Escalation level for overdue settlements'
+    },
+    dueDate: {
+      type: Date,
+      description: 'When settlement is due'
     }
   },
   roomType: {
@@ -337,6 +460,124 @@ const bookingSchema = new mongoose.Schema({
       type: Number,
       default: 1
     }
+  }],
+  // Extra persons added after booking creation
+  extraPersons: [{
+    personId: {
+      type: String,
+      default: () => new mongoose.Types.ObjectId().toString()
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    type: {
+      type: String,
+      enum: ['adult', 'child'],
+      required: true
+    },
+    age: {
+      type: Number,
+      min: 0,
+      max: 120
+    },
+    addedAt: {
+      type: Date,
+      default: Date.now
+    },
+    addedBy: {
+      userId: {
+        type: mongoose.Schema.ObjectId,
+        ref: 'User'
+      },
+      userName: String,
+      userRole: {
+        type: String,
+        enum: ['admin', 'staff']
+      }
+    },
+    isActive: {
+      type: Boolean,
+      default: true
+    }
+  }],
+  // Charges for extra persons
+  extraPersonCharges: [{
+    personId: {
+      type: String,
+      required: true
+    },
+    chargeRuleId: {
+      type: mongoose.Schema.ObjectId,
+      ref: 'ExtraPersonCharge'
+    },
+    baseCharge: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    multipliers: {
+      seasonal: {
+        type: Number,
+        default: 1
+      },
+      dayOfWeek: {
+        type: Number,
+        default: 1
+      },
+      source: {
+        type: Number,
+        default: 1
+      }
+    },
+    chargeBeforeTax: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    taxAmount: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    totalCharge: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    currency: {
+      type: String,
+      default: 'INR'
+    },
+    appliedAt: {
+      type: Date,
+      default: Date.now
+    },
+    paidAmount: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    isPaid: {
+      type: Boolean,
+      default: false
+    },
+    paidAt: {
+      type: Date
+    },
+    appliedBy: {
+      userId: {
+        type: mongoose.Schema.ObjectId,
+        ref: 'User'
+      },
+      userName: String,
+      userRole: {
+        type: String,
+        enum: ['admin', 'staff']
+      }
+    },
+    description: String
   }],
   cancellationReason: String,
   cancellationPolicy: {
@@ -530,6 +771,49 @@ const bookingSchema = new mongoose.Schema({
       default: false
     }
   },
+  // Travel Agent fields
+  travelAgentDetails: {
+    travelAgentId: {
+      type: mongoose.Schema.ObjectId,
+      ref: 'TravelAgent'
+    },
+    agentCode: {
+      type: String,
+      uppercase: true,
+      trim: true
+    },
+    agentName: {
+      type: String,
+      trim: true
+    },
+    commissionRate: {
+      type: Number,
+      min: 0,
+      max: 50
+    },
+    commissionAmount: {
+      type: Number,
+      min: 0
+    },
+    specialRatesApplied: {
+      type: Boolean,
+      default: false
+    },
+    totalSavings: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    agentBookingReference: {
+      type: String,
+      trim: true
+    }
+  },
+  bookingSource: {
+    type: String,
+    enum: ['direct', 'travel_agent', 'ota', 'corporate', 'walk_in', 'phone', 'email'],
+    default: 'direct'
+  },
   // Automation fields
   needsAutomaticProcessing: {
     type: Boolean,
@@ -623,7 +907,7 @@ bookingSchema.pre('save', function(next) {
     if (this.paymentDetails.totalPaid >= this.totalAmount) {
       this.paymentStatus = 'paid';
     } else if (this.paymentDetails.totalPaid > 0) {
-      this.paymentStatus = 'pending'; // Partial payment
+      this.paymentStatus = 'partially_paid'; // Partial payment
     }
   }
 
@@ -709,7 +993,296 @@ bookingSchema.virtual('roomDetails', {
 bookingSchema.methods.calculateTotalAmount = function() {
   const roomsTotal = this.rooms.reduce((total, room) => total + room.rate, 0) * this.nights;
   const extrasTotal = this.extras.reduce((total, extra) => total + (extra.price * extra.quantity), 0);
-  return roomsTotal + extrasTotal;
+  const extraPersonTotal = this.extraPersonCharges.reduce((total, charge) => total + charge.totalCharge, 0);
+  return roomsTotal + extrasTotal + extraPersonTotal;
+};
+
+// Instance method to add extra person
+bookingSchema.methods.addExtraPerson = async function(personData, userContext) {
+  if (!['admin', 'staff'].includes(userContext.userRole)) {
+    throw new Error('Only admin and staff can add extra persons');
+  }
+
+  // Validate person data
+  if (!personData.name || !personData.type) {
+    throw new Error('Person name and type are required');
+  }
+
+  if (personData.type === 'child' && (personData.age === undefined || personData.age < 0 || personData.age > 17)) {
+    throw new Error('Valid age is required for children (0-17)');
+  }
+
+  // Check if booking allows extra persons
+  if (this.status === 'cancelled' || this.status === 'no_show') {
+    throw new Error('Cannot add extra persons to cancelled or no-show bookings');
+  }
+
+  const extraPerson = {
+    name: personData.name,
+    type: personData.type,
+    age: personData.age,
+    addedBy: {
+      userId: userContext.userId,
+      userName: userContext.userName,
+      userRole: userContext.userRole
+    }
+  };
+
+  this.extraPersons.push(extraPerson);
+
+  // Update guest details count
+  if (personData.type === 'adult') {
+    this.guestDetails.adults += 1;
+  } else {
+    this.guestDetails.children += 1;
+  }
+
+  return extraPerson;
+};
+
+// Instance method to remove extra person
+bookingSchema.methods.removeExtraPerson = async function(personId, userContext) {
+  if (!['admin', 'staff'].includes(userContext.userRole)) {
+    throw new Error('Only admin and staff can remove extra persons');
+  }
+
+  const personIndex = this.extraPersons.findIndex(p => p.personId === personId);
+  if (personIndex === -1) {
+    throw new Error('Extra person not found');
+  }
+
+  const person = this.extraPersons[personIndex];
+
+  // Update guest details count
+  if (person.type === 'adult') {
+    this.guestDetails.adults = Math.max(1, this.guestDetails.adults - 1);
+  } else {
+    this.guestDetails.children = Math.max(0, this.guestDetails.children - 1);
+  }
+
+  // Remove person
+  this.extraPersons.splice(personIndex, 1);
+
+  // Remove associated charges
+  this.extraPersonCharges = this.extraPersonCharges.filter(charge => charge.personId !== personId);
+
+  return person;
+};
+
+// Instance method to calculate and apply extra person charges
+bookingSchema.methods.calculateExtraPersonCharges = async function() {
+  if (this.extraPersons.length === 0) {
+    return { totalCharges: 0, charges: [] };
+  }
+
+  const ExtraPersonCharge = mongoose.model('ExtraPersonCharge');
+
+  // Get room type from the first room, or the booking's roomType field as fallback
+  let roomType = this.roomType;
+  if (!roomType && this.rooms.length > 0) {
+    // Check if already populated
+    if (this.rooms[0].roomId && typeof this.rooms[0].roomId === 'object' && this.rooms[0].roomId.type) {
+      roomType = this.rooms[0].roomId.type;
+    } else {
+      // Need to populate
+      await this.populate('rooms.roomId', 'type');
+      roomType = this.rooms[0].roomId?.type;
+    }
+  }
+
+  const bookingData = {
+    roomType: roomType,
+    baseRoomRate: this.rooms.reduce((total, room) => total + room.rate, 0) / this.rooms.length,
+    extraPersons: this.extraPersons.map(p => ({
+      id: p.personId,
+      name: p.name,
+      type: p.type,
+      age: p.age
+    })),
+    checkIn: this.checkIn,
+    checkOut: this.checkOut,
+    bookingSource: this.source,
+    nights: this.nights
+  };
+
+  const chargeResult = await ExtraPersonCharge.calculateExtraPersonCharge(this.hotelId, bookingData);
+
+  // Update extra person charges while preserving payment status
+  const existingCharges = this.extraPersonCharges || [];
+  this.extraPersonCharges = chargeResult.chargeBreakdown.map(charge => {
+    // Find existing charge for this person to preserve payment status
+    const existingCharge = existingCharges.find(existing => existing.personId === charge.personId);
+
+    return {
+      personId: charge.personId,
+      chargeRuleId: charge.ruleApplied,
+      baseCharge: charge.baseCharge,
+      multipliers: {
+        seasonal: charge.seasonMultiplier,
+        dayOfWeek: charge.dayMultiplier,
+        source: charge.sourceMultiplier
+      },
+      chargeBeforeTax: charge.chargeBeforeTax,
+      taxAmount: charge.taxAmount,
+      totalCharge: charge.totalCharge,
+      currency: charge.currency,
+      description: `Extra ${charge.personType} charge for ${charge.personName}`,
+      // Preserve payment status from existing charge, or set defaults for new charges
+      paidAmount: existingCharge ? existingCharge.paidAmount : 0,
+      isPaid: existingCharge ? existingCharge.isPaid : false,
+      paidAt: existingCharge ? existingCharge.paidAt : undefined
+    };
+  });
+
+  return chargeResult;
+};
+
+// Instance method to calculate settlement
+bookingSchema.methods.calculateSettlement = function() {
+  if (!this.settlementTracking) {
+    this.settlementTracking = {
+      status: 'not_required',
+      adjustments: [],
+      outstandingBalance: 0,
+      refundAmount: 0,
+      settlementHistory: [],
+      remindersSent: [],
+      escalationLevel: 0
+    };
+  }
+
+  const finalAmount = this.calculateTotalAmount();
+  const totalPaid = this.paymentDetails?.totalPaid || 0;
+
+  // Add all adjustments
+  const adjustmentsTotal = this.settlementTracking.adjustments.reduce((total, adj) => total + adj.amount, 0);
+  const finalAmountWithAdjustments = finalAmount + adjustmentsTotal;
+
+  if (finalAmountWithAdjustments > totalPaid) {
+    // Guest owes money
+    this.settlementTracking.status = 'pending';
+    this.settlementTracking.outstandingBalance = finalAmountWithAdjustments - totalPaid;
+    this.settlementTracking.refundAmount = 0;
+  } else if (finalAmountWithAdjustments < totalPaid) {
+    // Refund required
+    this.settlementTracking.status = 'refund_pending';
+    this.settlementTracking.outstandingBalance = 0;
+    this.settlementTracking.refundAmount = totalPaid - finalAmountWithAdjustments;
+  } else {
+    // No settlement required
+    this.settlementTracking.status = 'completed';
+    this.settlementTracking.outstandingBalance = 0;
+    this.settlementTracking.refundAmount = 0;
+  }
+
+  this.settlementTracking.finalAmount = finalAmountWithAdjustments;
+  this.settlementTracking.lastUpdated = new Date();
+
+  return this.settlementTracking;
+};
+
+// Instance method to add settlement adjustment
+bookingSchema.methods.addSettlementAdjustment = function(adjustmentData, userContext) {
+  if (!['admin', 'staff'].includes(userContext.userRole)) {
+    throw new Error('Only admin and staff can add settlement adjustments');
+  }
+
+  const adjustment = {
+    type: adjustmentData.type,
+    amount: adjustmentData.amount,
+    description: adjustmentData.description,
+    appliedBy: {
+      userId: userContext.userId,
+      userName: userContext.userName,
+      userRole: userContext.userRole
+    },
+    invoiceGenerated: false
+  };
+
+  if (!this.settlementTracking) {
+    this.settlementTracking = {
+      status: 'not_required',
+      adjustments: [],
+      outstandingBalance: 0,
+      refundAmount: 0,
+      settlementHistory: [],
+      remindersSent: [],
+      escalationLevel: 0
+    };
+  }
+
+  this.settlementTracking.adjustments.push(adjustment);
+
+  // Add to settlement history
+  this.settlementTracking.settlementHistory.push({
+    action: 'adjustment_applied',
+    amount: adjustmentData.amount,
+    description: `${adjustmentData.type}: ${adjustmentData.description}`,
+    processedBy: {
+      userId: userContext.userId,
+      userName: userContext.userName,
+      userRole: userContext.userRole
+    }
+  });
+
+  // Recalculate settlement
+  this.calculateSettlement();
+
+  return adjustment;
+};
+
+// Instance method to process settlement payment
+bookingSchema.methods.processSettlementPayment = function(paymentData, userContext) {
+  if (!['admin', 'staff'].includes(userContext.userRole)) {
+    throw new Error('Only admin and staff can process settlement payments');
+  }
+
+  if (!this.settlementTracking || this.settlementTracking.status === 'not_required') {
+    throw new Error('No settlement required for this booking');
+  }
+
+  const payment = {
+    amount: paymentData.amount,
+    method: paymentData.method,
+    reference: paymentData.reference,
+    notes: paymentData.notes
+  };
+
+  // Add to payment details
+  if (!this.paymentDetails.paymentMethods) {
+    this.paymentDetails.paymentMethods = [];
+  }
+
+  this.paymentDetails.paymentMethods.push({
+    method: paymentData.method,
+    amount: paymentData.amount,
+    reference: paymentData.reference,
+    processedBy: userContext.userId,
+    notes: paymentData.notes
+  });
+
+  // Update payment totals
+  this.paymentDetails.totalPaid = this.paymentDetails.paymentMethods.reduce((total, payment) => total + payment.amount, 0);
+  this.paymentDetails.remainingAmount = Math.max(0, this.totalAmount - this.paymentDetails.totalPaid);
+
+  // Add to settlement history
+  this.settlementTracking.settlementHistory.push({
+    action: 'payment_received',
+    amount: paymentData.amount,
+    description: `Payment received via ${paymentData.method}`,
+    processedBy: {
+      userId: userContext.userId,
+      userName: userContext.userName,
+      userRole: userContext.userRole
+    },
+    paymentMethod: paymentData.method,
+    reference: paymentData.reference
+  });
+
+  // Recalculate settlement
+  this.calculateSettlement();
+
+  return payment;
 };
 
 // Static method to find overlapping bookings

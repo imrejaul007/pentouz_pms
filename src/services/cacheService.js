@@ -1,5 +1,4 @@
-import Redis from 'redis';
-import { promisify } from 'util';
+import { createClient } from 'redis';
 import logger from '../utils/logger.js';
 
 class CacheService {
@@ -17,48 +16,45 @@ class CacheService {
 
   async connect() {
     try {
-      this.client = Redis.createClient({
-        url: process.env.REDIS_URL || 'redis://localhost:6379',
-        retry_strategy: (options) => {
-          if (options.error && options.error.code === 'ECONNREFUSED') {
-            logger.error('Redis server refused connection');
-            return new Error('Redis server refused connection');
-          }
-          if (options.total_retry_time > 1000 * 60 * 60) {
-            logger.error('Redis retry time exhausted');
-            return new Error('Redis retry time exhausted');
-          }
-          if (options.attempt > 10) {
-            logger.error('Redis max retry attempts reached');
-            return undefined;
-          }
-          return Math.min(options.attempt * 100, 3000);
+      // Use same Redis URL as notification cache
+      const redisUrl = process.env.REDIS_URL;
+      if (!redisUrl) {
+        logger.warn('Redis URL not configured, cache service will use fallback');
+        this.connected = false;
+        return;
+      }
+
+      this.client = createClient({
+        url: redisUrl,
+        socket: {
+          connectTimeout: 10000,
+          lazyConnect: false
         }
       });
 
-      // Promisify Redis commands
-      this.getAsync = promisify(this.client.get).bind(this.client);
-      this.setAsync = promisify(this.client.set).bind(this.client);
-      this.delAsync = promisify(this.client.del).bind(this.client);
-      this.expireAsync = promisify(this.client.expire).bind(this.client);
-      this.ttlAsync = promisify(this.client.ttl).bind(this.client);
-      this.keysAsync = promisify(this.client.keys).bind(this.client);
-      this.flushdbAsync = promisify(this.client.flushdb).bind(this.client);
-
-      // Event handlers
+      // Event handlers with graceful error handling
       this.client.on('connect', () => {
-        logger.info('Redis client connected');
+        logger.info('✅ Cache service Redis client connected');
         this.connected = true;
       });
 
       this.client.on('error', (err) => {
-        logger.error('Redis client error:', err);
+        if (!this.errorLogged) {
+          logger.warn('⚠️  Cache service Redis connection failed, using fallback. Error:', err.message);
+          this.errorLogged = true;
+        }
         this.connected = false;
       });
 
       this.client.on('end', () => {
-        logger.info('Redis client disconnected');
+        logger.info('Cache service Redis client disconnected');
         this.connected = false;
+      });
+
+      this.client.on('ready', () => {
+        logger.info('✅ Cache service Redis client ready');
+        this.connected = true;
+        this.errorLogged = false;
       });
 
       await this.client.connect();
@@ -77,13 +73,12 @@ class CacheService {
 
   // Basic cache operations
   async get(key) {
-    if (!this.connected) {
-      logger.warn('Redis not connected, skipping cache get');
+    if (!this.connected || !this.client) {
       return null;
     }
 
     try {
-      const value = await this.getAsync(key);
+      const value = await this.client.get(key);
       return value ? JSON.parse(value) : null;
     } catch (error) {
       logger.error('Cache get error:', error);
@@ -92,16 +87,16 @@ class CacheService {
   }
 
   async set(key, value, ttl = 3600) {
-    if (!this.connected) {
-      logger.warn('Redis not connected, skipping cache set');
+    if (!this.connected || !this.client) {
       return false;
     }
 
     try {
       const serializedValue = JSON.stringify(value);
-      await this.setAsync(key, serializedValue);
       if (ttl > 0) {
-        await this.expireAsync(key, ttl);
+        await this.client.setEx(key, ttl, serializedValue);
+      } else {
+        await this.client.set(key, serializedValue);
       }
       return true;
     } catch (error) {
@@ -111,13 +106,12 @@ class CacheService {
   }
 
   async del(key) {
-    if (!this.connected) {
-      logger.warn('Redis not connected, skipping cache del');
+    if (!this.connected || !this.client) {
       return false;
     }
 
     try {
-      await this.delAsync(key);
+      await this.client.del(key);
       return true;
     } catch (error) {
       logger.error('Cache del error:', error);

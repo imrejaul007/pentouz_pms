@@ -19,17 +19,17 @@ const apiKeySchema = new mongoose.Schema({
   // Key Management
   keyId: {
     type: String,
-    required: true,
     unique: true
+    // Note: Not required here because pre-save hook generates it
   },
   keyHash: {
     type: String,
-    required: true,
     select: false // Never return in queries
+    // Note: Not required here because pre-save hook generates it
   },
   keyPrefix: {
-    type: String,
-    required: true // For identifying keys (pk_live_, pk_test_, etc.)
+    type: String
+    // Note: Not required here because pre-save hook generates it
   },
   
   // Ownership
@@ -273,16 +273,21 @@ apiKeySchema.methods.checkRateLimit = function() {
 
 // Pre-save middleware
 apiKeySchema.pre('save', async function(next) {
-  // Generate keyId if not exists
-  if (!this.keyId) {
-    this.keyId = this.constructor.generateKey(this.type, this.environment);
-    this.keyHash = await this.hashKey(this.keyId);
-    
-    // Extract prefix for easy identification
-    this.keyPrefix = this.keyId.substring(0, this.keyId.lastIndexOf('_'));
+  try {
+    // Generate keyId if not exists
+    if (!this.keyId) {
+      this.keyId = this.constructor.generateKey(this.type, this.environment);
+      this.keyHash = await this.hashKey(this.keyId);
+
+      // Extract prefix for easy identification
+      this.keyPrefix = this.keyId.substring(0, this.keyId.lastIndexOf('_'));
+    }
+
+    next();
+  } catch (error) {
+    console.error('APIKey pre-save error:', error);
+    next(error);
   }
-  
-  next();
 });
 
 const APIKey = mongoose.model('APIKey', apiKeySchema);

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import NotificationAutomationService from '../services/notificationAutomationService.js';
 
 const housekeepingTaskSchema = new mongoose.Schema({
   hotelId: {
@@ -257,6 +258,136 @@ housekeepingTaskSchema.virtual('efficiencyStatus').get(function() {
   if (score >= 75) return 'average';
   if (score >= 65) return 'below_average';
   return 'needs_improvement';
+});
+
+// NOTIFICATION AUTOMATION HOOKS
+housekeepingTaskSchema.post('save', async function(doc) {
+  try {
+    // Get room data for notifications
+    const room = await mongoose.model('Room').findById(doc.roomId).select('roomNumber');
+    const roomNumber = room ? room.roomNumber : 'Unknown';
+
+    // 1. New housekeeping task created
+    if (this.isNew) {
+      const priority = doc.priority === 'urgent' ? 'urgent' : 'medium';
+      const taskDescription = doc.tasks.join(', ');
+
+      await NotificationAutomationService.triggerNotification(
+        'room_needs_cleaning',
+        {
+          roomNumber,
+          tasks: taskDescription,
+          priority: doc.priority,
+          taskId: doc._id,
+          estimatedDuration: doc.estimatedDuration,
+          specialInstructions: doc.specialInstructions,
+          createdBy: doc.createdBy
+        },
+        'auto',
+        priority,
+        doc.hotelId
+      );
+    }
+
+    // 2. Housekeeping task assigned to staff
+    if (doc.isModified('assignedTo') && doc.assignedTo) {
+      await NotificationAutomationService.triggerNotification(
+        'housekeeping_assigned',
+        {
+          roomNumber,
+          tasks: doc.tasks.join(', '),
+          taskId: doc._id,
+          assignedTo: doc.assignedTo,
+          priority: doc.priority,
+          estimatedDuration: doc.estimatedDuration,
+          specialInstructions: doc.specialInstructions
+        },
+        [doc.assignedTo],
+        doc.priority === 'urgent' ? 'urgent' : 'medium',
+        doc.hotelId
+      );
+    }
+
+    // 3. Cleaning started
+    if (doc.isModified('status') && doc.status === 'in_progress') {
+      await NotificationAutomationService.triggerNotification(
+        'cleaning_started',
+        {
+          roomNumber,
+          tasks: doc.tasks.join(', '),
+          taskId: doc._id,
+          assignedTo: doc.assignedTo,
+          startedAt: doc.startedAt || new Date()
+        },
+        'auto',
+        'low',
+        doc.hotelId
+      );
+    }
+
+    // 4. Cleaning completed
+    if (doc.isModified('status') && doc.status === 'completed') {
+      await NotificationAutomationService.triggerNotification(
+        'cleaning_completed',
+        {
+          roomNumber,
+          tasks: doc.tasks.join(', '),
+          taskId: doc._id,
+          completedAt: doc.completedAt || new Date(),
+          actualDuration: doc.actualDuration,
+          assignedTo: doc.assignedTo,
+          qualityScore: doc.qualityScore,
+          inventoryCost: doc.totalInventoryCost || 0
+        },
+        'auto',
+        'medium',
+        doc.hotelId
+      );
+    }
+
+    // 5. Quality issue notification (low quality score)
+    if (doc.isModified('qualityScore') && doc.qualityScore && doc.qualityScore < 3) {
+      await NotificationAutomationService.triggerNotification(
+        'cleaning_quality_issue',
+        {
+          roomNumber,
+          tasks: doc.tasks.join(', '),
+          qualityScore: doc.qualityScore,
+          taskId: doc._id,
+          assignedTo: doc.assignedTo,
+          notes: doc.notes,
+          issue: `Low quality score: ${doc.qualityScore}/5`
+        },
+        'auto',
+        'high',
+        doc.hotelId
+      );
+    }
+
+    // 6. High inventory consumption alert
+    if (doc.isModified('inventoryConsumed') && doc.inventoryConsumed.length > 0) {
+      const totalCost = doc.totalInventoryCost || 0;
+      if (totalCost > 50) { // Threshold for high consumption
+        await NotificationAutomationService.triggerNotification(
+          'inventory_high_value_used',
+          {
+            roomNumber,
+            tasks: doc.tasks.join(', '),
+            totalCost,
+            itemCount: doc.inventoryItemsCount,
+            taskId: doc._id,
+            assignedTo: doc.assignedTo
+          },
+          'auto',
+          'medium',
+          doc.hotelId
+        );
+      }
+    }
+
+  } catch (error) {
+    console.error('Error in HousekeepingTask notification hook:', error);
+  }
 });
 
 export default mongoose.model('HousekeepingTask', housekeepingTaskSchema);

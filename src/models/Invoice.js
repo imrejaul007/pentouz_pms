@@ -757,4 +757,137 @@ invoiceSchema.statics.getOverdueInvoices = async function(hotelId) {
   .sort('dueDate');
 };
 
+// Static method to generate supplementary invoice for extra person charges
+invoiceSchema.statics.generateSupplementaryInvoice = async function(bookingId, extraPersonCharges, createdBy) {
+  const Booking = mongoose.model('Booking');
+  const booking = await Booking.findById(bookingId).populate('userId hotelId');
+
+  if (!booking) {
+    throw new Error('Booking not found');
+  }
+
+  // Prepare invoice items from extra person charges
+  const items = extraPersonCharges.map(charge => {
+    // The totalCharge already includes 18% GST, so we need to extract the base amount
+    const totalWithTax = charge.totalCharge;
+    const baseAmount = totalWithTax / 1.18; // Remove 18% GST to get base amount
+    const taxAmount = totalWithTax - baseAmount; // Calculate actual tax amount
+
+    return {
+      description: charge.description || `Extra person charge - ${charge.personName || 'Additional Guest'}`,
+      category: 'accommodation',
+      quantity: 1,
+      unitPrice: Math.round(baseAmount * 100) / 100, // Round to 2 decimal places
+      totalPrice: Math.round(totalWithTax * 100) / 100,
+      taxRate: 18, // GST rate for accommodation
+      taxAmount: Math.round(taxAmount * 100) / 100,
+      serviceType: 'ExtraPersonCharge',
+      serviceId: charge.personId
+    };
+  });
+
+  // Calculate totals
+  const subtotal = items.reduce((sum, item) => sum + item.unitPrice, 0); // Sum of base amounts (without tax)
+  const totalTax = items.reduce((sum, item) => sum + item.taxAmount, 0); // Sum of tax amounts
+  const totalAmount = items.reduce((sum, item) => sum + item.totalPrice, 0); // Sum of total amounts (with tax)
+
+  // Create supplementary invoice
+  const invoiceData = {
+    hotelId: booking.hotelId._id,
+    bookingId: bookingId,
+    guestId: booking.userId._id,
+    type: 'additional',
+    items: items,
+    subtotal: subtotal,
+    taxAmount: totalTax,
+    totalAmount: totalAmount,
+    dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
+    notes: 'Supplementary invoice for extra person charges',
+    createdBy: createdBy
+  };
+
+  const invoice = new this(invoiceData);
+  await invoice.save();
+
+  return invoice;
+};
+
+// Static method to generate settlement adjustment invoice
+invoiceSchema.statics.generateSettlementInvoice = async function(settlementId, adjustments, createdBy) {
+  const Settlement = mongoose.model('Settlement');
+  const settlement = await Settlement.findById(settlementId)
+    .populate({
+      path: 'bookingId',
+      populate: { path: 'userId hotelId' }
+    });
+
+  if (!settlement) {
+    throw new Error('Settlement not found');
+  }
+
+  const booking = settlement.bookingId;
+
+  // Prepare invoice items from settlement adjustments
+  const items = adjustments.map(adjustment => ({
+    description: adjustment.description,
+    category: 'other',
+    quantity: 1,
+    unitPrice: Math.abs(adjustment.amount),
+    totalPrice: Math.abs(adjustment.amount),
+    taxRate: adjustment.amount > 0 ? 18 : 0, // No tax on refunds
+    taxAmount: adjustment.amount > 0 ? (Math.abs(adjustment.amount) * 18) / 100 : 0,
+    serviceType: 'SettlementAdjustment',
+    serviceId: adjustment._id
+  }));
+
+  // Calculate totals
+  const subtotal = items.reduce((sum, item) => sum + item.totalPrice, 0);
+  const totalTax = items.reduce((sum, item) => sum + item.taxAmount, 0);
+  const totalAmount = subtotal + totalTax;
+
+  // Determine invoice type based on net adjustment
+  const netAdjustment = adjustments.reduce((sum, adj) => sum + adj.amount, 0);
+  const invoiceType = netAdjustment >= 0 ? 'additional' : 'refund';
+
+  const invoiceData = {
+    hotelId: booking.hotelId._id,
+    bookingId: booking._id,
+    guestId: booking.userId._id,
+    type: invoiceType,
+    items: items,
+    subtotal: subtotal,
+    taxAmount: totalTax,
+    totalAmount: totalAmount,
+    dueDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000), // 3 days for settlement invoices
+    notes: `Settlement ${invoiceType} for booking ${booking.bookingNumber}`,
+    createdBy: createdBy
+  };
+
+  const invoice = new this(invoiceData);
+  await invoice.save();
+
+  return invoice;
+};
+
+// Instance method to add extra person charges to existing invoice
+invoiceSchema.methods.addExtraPersonCharges = function(extraPersonCharges) {
+  const extraItems = extraPersonCharges.map(charge => ({
+    description: charge.description || `Extra person charge - ${charge.personName || 'Additional Guest'}`,
+    category: 'accommodation',
+    quantity: 1,
+    unitPrice: charge.baseCharge || charge.totalCharge,
+    totalPrice: charge.totalCharge,
+    taxRate: 18,
+    taxAmount: (charge.totalCharge * 18) / 100,
+    serviceType: 'ExtraPersonCharge',
+    serviceId: charge.personId,
+    dateProvided: charge.addedAt || new Date()
+  }));
+
+  this.items.push(...extraItems);
+  this.calculateTotals();
+
+  return this;
+};
+
 export default mongoose.model('Invoice', invoiceSchema);

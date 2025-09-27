@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import NotificationAutomationService from '../services/notificationAutomationService.js';
 
 /**
  * @swagger
@@ -449,5 +450,101 @@ inventoryItemSchema.methods.isUrgentReorder = function() {
   const criticalLevel = Math.floor(this.reorderSettings.reorderPoint * 0.25);
   return this.currentStock <= criticalLevel;
 };
+
+// NOTIFICATION AUTOMATION HOOKS
+inventoryItemSchema.post('save', async function(doc) {
+  try {
+    // 1. Low stock alert
+    if (doc.isModified('currentStock') && doc.isLowStock && doc.currentStock > 0) {
+      const priority = doc.currentStock <= (doc.stockThreshold * 0.5) ? 'high' : 'medium';
+
+      await NotificationAutomationService.triggerNotification(
+        'inventory_low_stock',
+        {
+          itemName: doc.name,
+          category: doc.category,
+          currentStock: doc.currentStock,
+          stockThreshold: doc.stockThreshold,
+          itemId: doc._id,
+          supplier: doc.supplier?.name || 'Unknown',
+          estimatedCost: doc.estimatedReorderCost || 0,
+          daysUntilStockOut: doc.reorderUrgency || 'Unknown'
+        },
+        'auto',
+        priority,
+        doc.hotelId
+      );
+    }
+
+    // 2. Out of stock alert
+    if (doc.isModified('currentStock') && doc.currentStock === 0) {
+      await NotificationAutomationService.triggerNotification(
+        'inventory_out_of_stock',
+        {
+          itemName: doc.name,
+          category: doc.category,
+          itemId: doc._id,
+          lastKnownStock: doc.stockThreshold || 0,
+          supplier: doc.supplier?.name || 'Unknown',
+          urgentReorder: doc.isUrgentReorder()
+        },
+        'auto',
+        'urgent',
+        doc.hotelId
+      );
+    }
+
+    // 3. Reorder needed alert
+    if (doc.isModified('currentStock') && doc.needsReorder && doc.reorderSettings?.autoReorderEnabled) {
+      const priority = doc.isUrgentReorder() ? 'urgent' : 'high';
+
+      await NotificationAutomationService.triggerNotification(
+        'inventory_reorder_needed',
+        {
+          itemName: doc.name,
+          category: doc.category,
+          currentStock: doc.currentStock,
+          reorderPoint: doc.reorderSettings.reorderPoint,
+          reorderQuantity: doc.reorderSettings.reorderQuantity || 0,
+          estimatedCost: doc.estimatedReorderCost || 0,
+          supplier: doc.reorderSettings?.preferredSupplier?.name || doc.supplier?.name || 'Unknown',
+          supplierContact: doc.reorderSettings?.preferredSupplier?.contact || doc.supplier?.contact,
+          leadTime: doc.reorderSettings?.preferredSupplier?.leadTime || 'Unknown',
+          itemId: doc._id,
+          urgent: doc.isUrgentReorder()
+        },
+        'auto',
+        priority,
+        doc.hotelId
+      );
+    }
+
+    // 4. High-value item stock change alert
+    if (doc.isModified('currentStock') && doc.unitPrice > 100) {
+      const stockChange = doc.currentStock - (this.getUpdate()?.$inc?.currentStock || 0);
+      if (stockChange < 0) { // Stock decreased
+        await NotificationAutomationService.triggerNotification(
+          'inventory_high_value_usage',
+          {
+            itemName: doc.name,
+            category: doc.category,
+            unitPrice: doc.unitPrice,
+            stockUsed: Math.abs(stockChange),
+            totalValue: Math.abs(stockChange) * doc.unitPrice,
+            currentStock: doc.currentStock,
+            itemId: doc._id,
+            isLowStock: doc.isLowStock
+          },
+          'auto',
+          doc.unitPrice > 500 ? 'high' : 'medium',
+          doc.hotelId
+        );
+      }
+    }
+
+  } catch (error) {
+    console.error('Error in InventoryItem notification hook:', error);
+  }
+});
 
 export default mongoose.model('InventoryItem', inventoryItemSchema);

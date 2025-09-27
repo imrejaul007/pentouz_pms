@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import NotificationAutomationService from '../services/notificationAutomationService.js';
 
 /**
  * @swagger
@@ -623,5 +624,184 @@ inventoryConsumptionSchema.statics.predictHousekeepingConsumption = async functi
 
   return await this.aggregate(pipeline);
 };
+
+// NOTIFICATION AUTOMATION HOOKS
+inventoryConsumptionSchema.post('save', async function(doc) {
+  try {
+    // Get inventory item details for notifications
+    const inventoryItem = await mongoose.model('InventoryItem').findById(doc.inventoryItemId).select('name category unitPrice currentStock stockThreshold');
+    const itemName = inventoryItem ? inventoryItem.name : 'Unknown Item';
+    const category = inventoryItem ? inventoryItem.category : 'Unknown';
+
+    // Get room details if available
+    let roomNumber = 'Unknown';
+    if (doc.roomId) {
+      const room = await mongoose.model('Room').findById(doc.roomId).select('roomNumber');
+      roomNumber = room ? room.roomNumber : 'Unknown';
+    }
+
+    // 1. High-value consumption alert (items over $50)
+    if (this.isNew && doc.totalCost > 50) {
+      const priority = doc.totalCost > 200 ? 'urgent' : 'high';
+
+      await NotificationAutomationService.triggerNotification(
+        'inventory_high_value_consumed',
+        {
+          itemName,
+          category,
+          quantity: doc.quantity,
+          unitCost: doc.unitCost,
+          totalCost: doc.totalCost,
+          consumptionType: doc.consumptionType,
+          departmentType: doc.departmentType,
+          consumedBy: doc.consumedBy,
+          roomNumber,
+          itemId: doc.inventoryItemId,
+          consumptionId: doc._id,
+          isReplacement: !!doc.replacementType,
+          replacementReason: doc.replacementType || null
+        },
+        'auto',
+        priority,
+        doc.hotelId
+      );
+    }
+
+    // 2. Theft/loss alert
+    if (this.isNew && (doc.replacementType === 'theft' || doc.replacementType === 'lost')) {
+      await NotificationAutomationService.triggerNotification(
+        'inventory_theft_loss_detected',
+        {
+          itemName,
+          category,
+          quantity: doc.quantity,
+          totalCost: doc.totalCost,
+          incidentType: doc.replacementType,
+          roomNumber,
+          consumedBy: doc.consumedBy,
+          consumedFor: doc.consumedFor,
+          itemId: doc.inventoryItemId,
+          consumptionId: doc._id,
+          departmentType: doc.departmentType,
+          notes: doc.notes,
+          reportedAt: doc.consumedAt
+        },
+        'auto',
+        'urgent',
+        doc.hotelId
+      );
+    }
+
+    // 3. Unusual consumption pattern (quantity much higher than expected)
+    if (this.isNew && doc.expectedQuantity && doc.quantity > (doc.expectedQuantity * 1.5)) {
+      const overusagePercent = Math.round(((doc.quantity - doc.expectedQuantity) / doc.expectedQuantity) * 100);
+
+      await NotificationAutomationService.triggerNotification(
+        'inventory_unusual_consumption',
+        {
+          itemName,
+          category,
+          actualQuantity: doc.quantity,
+          expectedQuantity: doc.expectedQuantity,
+          overusagePercent,
+          totalCost: doc.totalCost,
+          consumptionType: doc.consumptionType,
+          departmentType: doc.departmentType,
+          consumedBy: doc.consumedBy,
+          roomNumber,
+          itemId: doc.inventoryItemId,
+          consumptionId: doc._id,
+          efficiency: doc.efficiency || 0
+        },
+        'auto',
+        overusagePercent > 100 ? 'high' : 'medium',
+        doc.hotelId
+      );
+    }
+
+    // 4. VIP guest special consumption tracking
+    if (this.isNew && doc.isVIPGuest && doc.totalCost > 25) {
+      await NotificationAutomationService.triggerNotification(
+        'inventory_vip_usage',
+        {
+          itemName,
+          category,
+          quantity: doc.quantity,
+          totalCost: doc.totalCost,
+          roomNumber,
+          consumedFor: doc.consumedFor,
+          consumptionType: doc.consumptionType,
+          isComplimentary: doc.isComplimentary,
+          chargeAmount: doc.guestChargeAmount || 0,
+          itemId: doc.inventoryItemId,
+          consumptionId: doc._id,
+          specialRequirements: doc.specialRequirements
+        },
+        'auto',
+        'medium',
+        doc.hotelId
+      );
+    }
+
+    // 5. Multiple consumptions in short time (potential waste)
+    if (this.isNew) {
+      const recentConsumptions = await mongoose.model('InventoryConsumption').countDocuments({
+        hotelId: doc.hotelId,
+        inventoryItemId: doc.inventoryItemId,
+        consumedBy: doc.consumedBy,
+        consumedAt: {
+          $gte: new Date(Date.now() - (60 * 60 * 1000)), // Last hour
+          $ne: doc.consumedAt
+        }
+      });
+
+      if (recentConsumptions >= 3) {
+        await NotificationAutomationService.triggerNotification(
+          'inventory_frequent_usage_alert',
+          {
+            itemName,
+            category,
+            consumptionCount: recentConsumptions + 1,
+            timeWindow: '1 hour',
+            consumedBy: doc.consumedBy,
+            departmentType: doc.departmentType,
+            itemId: doc.inventoryItemId,
+            totalRecentCost: doc.totalCost, // Could calculate total from all recent consumptions
+            possibleWaste: true
+          },
+          'auto',
+          'medium',
+          doc.hotelId
+        );
+      }
+    }
+
+    // 6. Auto-consumption efficiency tracking
+    if (doc.isModified('efficiency') && doc.efficiency && doc.efficiency < 70) {
+      await NotificationAutomationService.triggerNotification(
+        'inventory_efficiency_issue',
+        {
+          itemName,
+          category,
+          efficiency: doc.efficiency,
+          actualQuantity: doc.quantity,
+          expectedQuantity: doc.expectedQuantity || 0,
+          consumptionType: doc.consumptionType,
+          consumedBy: doc.consumedBy,
+          roomNumber,
+          itemId: doc.inventoryItemId,
+          consumptionId: doc._id,
+          potentialSavings: doc.expectedQuantity ? (doc.quantity - doc.expectedQuantity) * doc.unitCost : 0
+        },
+        'auto',
+        doc.efficiency < 50 ? 'high' : 'medium',
+        doc.hotelId
+      );
+    }
+
+  } catch (error) {
+    console.error('Error in InventoryConsumption notification hook:', error);
+  }
+});
 
 export default mongoose.model('InventoryConsumption', inventoryConsumptionSchema);

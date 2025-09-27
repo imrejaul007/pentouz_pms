@@ -171,7 +171,12 @@ export const createOrder = async (req, res) => {
   try {
     const orderData = {
       ...req.body,
-      orderId: uuidv4()
+      orderId: uuidv4(),
+      // Set default payment method for room service
+      payment: req.body.payment || {
+        method: req.body.type === 'room_service' ? 'room_charge' : 'cash',
+        status: 'pending'
+      }
     };
     
     // Calculate totals
@@ -249,8 +254,18 @@ export const createOrder = async (req, res) => {
       });
     }
     
-    orderData.totalAmount = subtotal + totalTax - discountAmount;
-    
+    orderData.totalAmount = subtotal + orderData.taxes.totalTax - discountAmount;
+
+    // Generate order number if not provided
+    if (!orderData.orderNumber) {
+      const today = new Date();
+      const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+      const count = await POSOrder.countDocuments({
+        orderNumber: new RegExp(`^${dateStr}`)
+      });
+      orderData.orderNumber = `${dateStr}${(count + 1).toString().padStart(4, '0')}`;
+    }
+
     const order = new POSOrder(orderData);
     await order.save();
     
