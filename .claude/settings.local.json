@@ -11,14 +11,7 @@
       "Bash(npm run generate-keys:*)",
       "Bash(node:*)",
       "WebSearch",
-      "Bash(npm run seed:*)",
-      "Bash(git rev-list:*)",
-      "Bash(git rm:*)",
-      "Bash(git reset:*)",
-      "Bash(git update-ref:*)",
-      "Bash(git add:*)",
-      "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(npm run seed:*)"
     ],
     "deny": [],
     "ask": []
